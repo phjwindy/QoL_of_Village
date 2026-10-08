@@ -1,14 +1,3 @@
----
-AIGC:
-  ContentProducer: '001191110102MAD55U9H0F10002'
-  ContentPropagator: '001191110102MAD55U9H0F10002'
-  Label: '1'
-  ProduceID: '15b93789-2443-4cd5-a734-ffa4d8779014'
-  PropagateID: '15b93789-2443-4cd5-a734-ffa4d8779014'
-  ReservedCode1: '938353da-c374-410b-ae94-11ea841e418c'
-  ReservedCode2: '938353da-c374-410b-ae94-11ea841e418c'
----
-
 # ProductionAuto 版本适配指南
 
 本文档面向 AI 协作者和人类开发者，说明游戏更新后如何适配 ProductionAuto MOD。

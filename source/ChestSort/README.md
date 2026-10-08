@@ -1,14 +1,3 @@
----
-AIGC:
-  ContentProducer: '001191110102MAD55U9H0F10002'
-  ContentPropagator: '001191110102MAD55U9H0F10002'
-  Label: '1'
-  ProduceID: '26e913c9-a877-4611-8e4f-733f814971d7'
-  PropagateID: '26e913c9-a877-4611-8e4f-733f814971d7'
-  ReservedCode1: '66ffa19b-45af-4ba9-9477-2fe4d02e4d67'
-  ReservedCode2: '66ffa19b-45af-4ba9-9477-2fe4d02e4d67'
----
-
 # 箱子快速归类 Mod（ChestSort v1.2.3）
 
 ## 这是什么

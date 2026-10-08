@@ -1,14 +1,3 @@
----
-AIGC:
-  ContentProducer: '001191110102MAD55U9H0F10002'
-  ContentPropagator: '001191110102MAD55U9H0F10002'
-  Label: '1'
-  ProduceID: '717017be-3782-41af-9516-349952c32761'
-  PropagateID: '717017be-3782-41af-9516-349952c32761'
-  ReservedCode1: '9f608620-f349-4c55-a8d0-414d9aec7977'
-  ReservedCode2: '9f608620-f349-4c55-a8d0-414d9aec7977'
----
-
 # 链式自动化 Mod（ProductionAuto v1.1.0）
 
 ## 这是什么
