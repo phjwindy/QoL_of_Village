@@ -1,6 +1,9 @@
-// scarecrow.cpp —— 稻草人与洒水器重叠 (v1.0.3)
+// scarecrow.cpp —— 稻草人与洒水器重叠 (v1.0.8 正式版)
 //
 // v1.0.3: SEH 保护 g_currentWorldKey/g_resolveGeometryStatus；发布版关闭日志。
+//
+// v1.0.6: v1.20 (build 25311578) 适配：7 个 RVA 重定位 + expected 数组新 exe 实读。
+//        CURRENT_WORLD_KEY 为 TLS 存根模板(调用者锚点法定位 42/42 一致)。
 //
 // 原理（源自 BigL233 dinput8.cpp 1862-2489 行）：
 //   放置稻草人时，游戏通过 3 个碰撞检测回调判断格子是否被占用。
@@ -9,13 +12,13 @@
 //   其他碰撞（稻草人自身、未知类型等）保持原样拒绝。
 //
 // 4 个 hook：
-//   1. placement-entry        (RVA 0x1D2C20)  主入口，检测当前放置物是否稻草人
-//   2. same-land-predicate     (RVA 0x1DB870)  同地块碰撞检测
-//   3. existing-object-predicate (RVA 0x1D4C50) 已有物体碰撞检测
-//   4. geometry-intersection-callback (vtable slot 0xE4CA40 → RVA 0x6AB620) 几何相交回调
+//   1. placement-entry        (RVA 0x1DE1A0)  主入口，检测当前放置物是否稻草人
+//   2. same-land-predicate     (RVA 0x1E6E00)  同地块碰撞检测
+//   3. existing-object-predicate (RVA 0x1E01E0) 已有物体碰撞检测
+//   4. geometry-intersection-callback (vtable slot 0xE74D58 → RVA 0x6D0290) 几何相交回调
 //
 // 自动生效，无需按键。
-// 适配 build 25094764 / v1.09。
+// 适配 build 25311578 / v1.20。
 
 #include <windows.h>
 #include <cstdint>
@@ -23,12 +26,15 @@
 #include <cstring>
 
 #include "logging.h"
-#include "memory_cache.h"  // v1.0.2: FastRegion 区域缓存
-#include "selfverify.h"
+#include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
+#include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
+#include "hot_config.h"
+#include "memory_cache.h"
+#include "patch_safety.h"  // v1.0.2: FastRegion 区域缓存
 
 // 日志开关：发布版禁用日志输出
 // 调试时取消注释下行即可开启日志
-// #define SCARECROW_LOGGING
+// #define SCARECROW_LOGGING   // v1.0.10 转正：日志关闭（定位时取消注释重编）
 #ifdef SCARECROW_LOGGING
 #else
   #define LogOpen(x)  ((void)0)
@@ -41,21 +47,21 @@ using u64 = std::uint64_t;
 using u32 = std::uint32_t;
 
 // ============================================================
-// 常量（build 25094764 / v1.09）
+// 常量（build 25311578 / v1.20）
 // ============================================================
 
 // ---- hook 目标 RVA ----
-static constexpr uintptr_t RVA_IS_PLACEMENT_GIMMICK          = 0x1D2D70;
-static constexpr uintptr_t RVA_PLACEMENT_LAND_PREDICATE      = 0x1DB9D0;
-static constexpr uintptr_t RVA_PLACEMENT_OBJECT_PREDICATE    = 0x1D4DB0;
-static constexpr uintptr_t RVA_GEOMETRY_INTERSECTION_WRAPPER  = 0x6AEF50;
-static constexpr uintptr_t RVA_GEOMETRY_CALLBACK_VTABLE_SLOT = 0xE51EA0;
-static constexpr uintptr_t RVA_CURRENT_WORLD_KEY              = 0x0DD110;
-static constexpr uintptr_t RVA_RESOLVE_GEOMETRY_STATUS        = 0x6A26C0;
+static volatile uintptr_t RVA_IS_PLACEMENT_GIMMICK = 0x1DE1A0;
+static volatile uintptr_t RVA_PLACEMENT_LAND_PREDICATE = 0x1E6E00;
+static volatile uintptr_t RVA_PLACEMENT_OBJECT_PREDICATE = 0x1E01E0;
+static volatile uintptr_t RVA_GEOMETRY_INTERSECTION_WRAPPER = 0x6D0290;
+static volatile uintptr_t RVA_GEOMETRY_CALLBACK_VTABLE_SLOT = 0xE74D58;
+static volatile uintptr_t RVA_CURRENT_WORLD_KEY = 0xE67A0;
+static volatile uintptr_t RVA_RESOLVE_GEOMETRY_STATUS = 0x6C3A00;
 
 // ---- 结构体偏移 ----
-static constexpr uintptr_t GIMMICK_DATA_HOLDER_OFFSET  = 0x240;
-static constexpr uintptr_t GIMMICK_MODULE_NAME_OFFSET  = 0x0D8;
+static volatile uintptr_t GIMMICK_DATA_HOLDER_OFFSET = 0x240;
+static volatile uintptr_t GIMMICK_MODULE_NAME_OFFSET = 0x0E0;  // v1.20: 0xD8→0xE0
 
 // ---- 字节签名 ----
 static const unsigned char kExpectedPlacement[15] = {
@@ -73,13 +79,13 @@ static const unsigned char kExpectedObjectPredicate[15] = {
 static const unsigned char kExpectedGeometryWrapper[20] = {
     0x48, 0x89, 0x5C, 0x24, 0x18, 0x57, 0x48, 0x81,
     0xEC, 0xC0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x05,
-    0xDC, 0xA0, 0x94, 0x00
+    0x9C, 0xED, 0x94, 0x00
 };
 static const unsigned char kExpectedCurrentWorldKey[28] = {
     0x48, 0x83, 0xEC, 0x28, 0x65, 0x48, 0x8B, 0x04,
     0x25, 0x58, 0x00, 0x00, 0x00, 0xB9, 0x10, 0x00,
     0x00, 0x00, 0x48, 0x8B, 0x00, 0x8B, 0x04, 0x01,
-    0x39, 0x05, 0x76, 0x73
+    0x39, 0x05, 0x42, 0x5F
 };
 static const unsigned char kExpectedResolver[16] = {
     0x48, 0x89, 0x5C, 0x24, 0x08, 0x4C, 0x8B, 0xD9,
@@ -119,14 +125,7 @@ static ResolveGeometryStatusFunction g_resolveGeometryStatus = nullptr;
 // 内存工具
 // ============================================================
 static bool WriteMem(void* target, const void* data, size_t size) {
-    if (!target || !data || size == 0) return false;
-    DWORD old = 0;
-    if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &old)) return false;
-    memcpy(target, data, size);
-    const bool readback = memcmp(target, data, size) == 0;
-    VirtualProtect(target, size, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), target, size);
-    return readback;
+    return qol::WritePatchChecked(target, data, size);
 }
 
 static bool IsReadable(const void* pointer, size_t size) {
@@ -438,7 +437,8 @@ static bool InstallHooks() {
     g_resolveGeometryStatus = reinterpret_cast<ResolveGeometryStatusFunction>(
         base + RVA_RESOLVE_GEOMETRY_STATUS);
 
-    // 2. 安装 4 个 hook（顺序：3 个 predicate → 1 个主入口）
+    // 2. 逐个安装 4 个 hook（顺序：3 个 predicate → 1 个主入口）
+    // H7: 安装失败时逐个回滚已成功的 hook
     bool ready =
         InstallFunctionHook("same-land-predicate",
             RVA_PLACEMENT_LAND_PREDICATE,
@@ -463,7 +463,33 @@ static bool InstallHooks() {
             reinterpret_cast<void**>(&g_originalPlacement));
 
     if (!ready) {
-        Log("[Scarecrow] hook chain incomplete; feature disabled safely\n");
+        Log("[Scarecrow] hook chain incomplete; rolling back installed hooks\n");
+        // H7: 逆序回滚已安装的 hook
+        if (g_originalPlacement) {
+            WriteMem(reinterpret_cast<void*>(base + RVA_IS_PLACEMENT_GIMMICK),
+                     kExpectedPlacement, sizeof(kExpectedPlacement));
+            VirtualFree(g_originalPlacement, 0, MEM_RELEASE);
+            g_originalPlacement = nullptr;
+        }
+        if (g_originalGeometryWrapper) {
+            void* originalFunc =
+                reinterpret_cast<void*>(base + RVA_GEOMETRY_INTERSECTION_WRAPPER);
+            WriteMem(reinterpret_cast<void*>(base + RVA_GEOMETRY_CALLBACK_VTABLE_SLOT),
+                     &originalFunc, sizeof(originalFunc));
+            g_originalGeometryWrapper = nullptr;
+        }
+        if (g_originalObjectPredicate) {
+            WriteMem(reinterpret_cast<void*>(base + RVA_PLACEMENT_OBJECT_PREDICATE),
+                     kExpectedObjectPredicate, sizeof(kExpectedObjectPredicate));
+            VirtualFree(g_originalObjectPredicate, 0, MEM_RELEASE);
+            g_originalObjectPredicate = nullptr;
+        }
+        if (g_originalLandPredicate) {
+            WriteMem(reinterpret_cast<void*>(base + RVA_PLACEMENT_LAND_PREDICATE),
+                     kExpectedLandPredicate, sizeof(kExpectedLandPredicate));
+            VirtualFree(g_originalLandPredicate, 0, MEM_RELEASE);
+            g_originalLandPredicate = nullptr;
+        }
         return false;
     }
 
@@ -489,8 +515,20 @@ static bool IsDuplicateInstance() {
 
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("scarecrow");
-    if (!SelfVerifyInit("scarecrow")) return;
     Log("[Scarecrow] mod_init 开始");
+
+    // ---- HotConfig 热调参注册 ----
+    HotConfig_Register("scarecrow", (void*)&RVA_IS_PLACEMENT_GIMMICK, "RVA_IS_PLACEMENT_GIMMICK", HOT_RVA, 0x1DE1A0);
+    HotConfig_Register("scarecrow", (void*)&RVA_PLACEMENT_LAND_PREDICATE, "RVA_PLACEMENT_LAND_PREDICATE", HOT_RVA, 0x1E6E00);
+    HotConfig_Register("scarecrow", (void*)&RVA_PLACEMENT_OBJECT_PREDICATE, "RVA_PLACEMENT_OBJECT_PREDICATE", HOT_RVA, 0x1E01E0);
+    HotConfig_Register("scarecrow", (void*)&RVA_GEOMETRY_INTERSECTION_WRAPPER, "RVA_GEOMETRY_INTERSECTION_WRAPPER", HOT_RVA, 0x6D0290);
+    HotConfig_Register("scarecrow", (void*)&RVA_GEOMETRY_CALLBACK_VTABLE_SLOT, "RVA_GEOMETRY_CALLBACK_VTABLE_SLOT", HOT_RVA, 0xE74D58);
+    HotConfig_Register("scarecrow", (void*)&RVA_CURRENT_WORLD_KEY, "RVA_CURRENT_WORLD_KEY", HOT_RVA, 0xE67A0);
+    HotConfig_Register("scarecrow", (void*)&RVA_RESOLVE_GEOMETRY_STATUS, "RVA_RESOLVE_GEOMETRY_STATUS", HOT_RVA, 0x6C3A00);
+    HotConfig_Register("scarecrow", (void*)&GIMMICK_DATA_HOLDER_OFFSET, "GIMMICK_DATA_HOLDER_OFFSET", HOT_RVA, 0x240);
+    HotConfig_Register("scarecrow", (void*)&GIMMICK_MODULE_NAME_OFFSET, "GIMMICK_MODULE_NAME_OFFSET", HOT_RVA, 0x0E0);
+    HotConfig_Poll();
+    HotConfig_DumpCE("scarecrow");
 
     if (IsDuplicateInstance()) {
         g_duplicate = true;
@@ -516,14 +554,24 @@ extern "C" __declspec(dllexport) void mod_init(void) {
 }
 
 extern "C" __declspec(dllexport) void mod_tick(void) {
-    // 无需逐帧逻辑，hook 在 mod_init 中一次性安装
+    qol::budget::BeginFrame();  // P0: 帧锚定（幂等，多 DLL 安全）
+    static int s_bdgSlot = -1;  // P0 探针（惰性注册，析构自动上报）
+    if (s_bdgSlot < 0) s_bdgSlot = qol::budget::Slot("Scarecrow");
+    struct BdgGuard {
+        int slot; uint64_t t0;
+        ~BdgGuard() { qol::budget::Report(slot, qol::budget::NowUs() - t0); }
+    } bdgGuard = { s_bdgSlot, qol::budget::NowUs() };
+
+    if (QolGameBusy()) return;  // P1-2: 载入/菜单期间静默
+    HotConfig_Poll();
 }
 
 extern "C" __declspec(dllexport) void unload(void) {
     Log("[Scarecrow] unload 开始");
     const uintptr_t base = G::base;
 
-    if (g_hookReady && base) {
+    // H7: 按各 hook 指针非空逐个还原，不依赖 g_hookReady 总开关
+    if (base) {
         // 1. 还原 3 个函数 hook（写回原始序言字节）
         if (g_originalLandPredicate) {
             WriteMem(reinterpret_cast<void*>(base + RVA_PLACEMENT_LAND_PREDICATE),
@@ -561,10 +609,10 @@ extern "C" __declspec(dllexport) void unload(void) {
         }
 
         g_originalGeometryWrapper = nullptr;
-        g_hookReady = false;
-        g_enabled.store(false, std::memory_order_relaxed);
     }
 
+    g_hookReady = false;
+    g_enabled.store(false, std::memory_order_relaxed);
     Log("[Scarecrow] unload 完成，所有 hook 已还原");
     LogClose();
 }

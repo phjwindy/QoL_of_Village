@@ -1,16 +1,18 @@
-// monstermark.cpp —— MonsterMark: Ghost Rat / Treasure Box 地图标记 (v1.0.35)
+// monstermark.cpp —— MonsterMark: Ghost Rat / Treasure Box 地图标记 (v1.0.50 正式版：时间链修复+夜测通过)
 //
-// v1.0.35: 停用书/齿轮锚点标记（NightScanAnchors 不再调用）——0x1C1A00
+// v1.0.36: 停用书/齿轮锚点标记（NightScanAnchors 不再调用）——0x1C1A00
 // 无法区分"锚点有定义"与"今晚实际生成"，用户实测仍有空标（标识 3/4 无
 // 东西）。暂只显示幽灵鼠/宝箱标记。待未来逆向"实际生成物列表"后再恢复。
 //
 // 从 dinput8.cpp 原始 .inl 提取的独立 DLL 插件。
-// 实现逻辑见 night_map_markers.inl（已更新至 build 25094764 v1.09 RVA + byte array）。
+// 实现逻辑见 night_map_markers.inl（已更新至 build 25311578 v1.20 RVA + byte array）。
+// v1.0.40-diag: 40 个 expected 字节数组从新 exe 实读重新生成；OFFSET_X/Y 重定位；
+//           内联 0x2DA410→0x2E9E63；回调三件套 vtable 铁证修正；SHA/大小指纹更新。
 //
 // 本文件提供 .inl 所需的全部外部依赖桩函数。
 // .inl 在文件末尾通过 #include 引入。
 
-#define MONSTERMARK_VERSION L"v1.0.35"
+#define MONSTERMARK_VERSION L"v1.0.50"
 
 #include <windows.h>
 #include <cstddef>
@@ -31,10 +33,12 @@ using u32 = std::uint32_t;
 // 日志（QoL_Shared）
 // ============================================================
 #include "logging.h"
-#include "selfverify.h"
+#include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
+#include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
+#include "hot_config.h"
 
-// MonsterMark 日志开关：诊断版开启
-// #define MONSTERMARK_LOGGING
+// MonsterMark 日志开关：诊断版开启（已验证正常后关闭）
+// #define MONSTERMARK_LOGGING  // v1.0.50 正式版关闭（诊断能力保留在源码，夜间标记复发时重开宏重编即可）
 #ifdef MONSTERMARK_LOGGING
   // 使用 QoL_Shared 的日志系统
 #else
@@ -52,7 +56,7 @@ static bool g_supportedExe = false;
 // ============================================================
 // RVA_GAME_ROOT — .inl 通过 RVA_GAME_ROOT 引用（与 ChestSort 一致）
 // ============================================================
-static constexpr uintptr_t RVA_GAME_ROOT = 0x10D4950;  // build 25094764
+static constexpr uintptr_t RVA_GAME_ROOT = 0x10FCBB0;  // build 25311578 (v1.20)
 
 // ============================================================
 // IsReadable — 内存可读检查（与 dinput8.cpp 一致）
@@ -215,7 +219,7 @@ static bool VerifyExeBuild() {
     }
 
     LARGE_INTEGER fileSize;
-    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart != 18134536) {
+    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart != 18305544) {
         CloseHandle(hFile);
         return false;
     }
@@ -245,17 +249,17 @@ static bool VerifyExeBuild() {
     BCryptDestroyHash(hHash);
     BCryptCloseAlgorithmProvider(hAlg, 0);
 
-    // build 25094764 (v1.09) SHA-256 — exe 二进制与 24969282 相同，仅 build 号变化
+    // build 25311578 (v1.20) SHA-256
     static const unsigned char expected[32] = {
-        0x7D, 0xC5, 0xAD, 0x61, 0x45, 0x41, 0xFB, 0x77,
-        0x08, 0xE4, 0x20, 0x36, 0xDF, 0x7B, 0x7D, 0xA8,
-        0x50, 0x53, 0xAB, 0x49, 0x59, 0xF6, 0xED, 0x2E,
-        0x9D, 0xFE, 0x13, 0x30, 0xAE, 0xDB, 0xD3, 0x81
+        0xAC, 0x7D, 0x95, 0x5B, 0xAA, 0x91, 0x59, 0x29,
+        0xB1, 0x85, 0xDF, 0x85, 0xCF, 0xA1, 0x3F, 0x7E,
+        0x81, 0xAD, 0x57, 0xA9, 0xC6, 0x8F, 0x30, 0x8D,
+        0xA7, 0x69, 0x73, 0x97, 0x75, 0x86, 0x9A, 0x05
     };
 
     bool match = memcmp(hash, expected, sizeof(hash)) == 0;
     if (match) {
-        Log("[MonsterMark] village.exe verified: build 25094764 (1.09)\n");
+        Log("[MonsterMark] village.exe verified: build 25311578 (1.20)\n");
     } else {
         Log("[MonsterMark] village.exe SHA-256 mismatch; feature disabled\n");
     }
@@ -269,6 +273,7 @@ static bool InstallNightMapMarkers();
 static bool InstallNightAnchorPosHook();
 static void NightDiagScanCallbacks();
 static void NightDiagEnumerateHashTable();
+void NightHotConfigRegisterAll();  // HotConfig 注册（实现在 .inl 末尾）
 
 // ============================================================
 // 插件入口
@@ -276,9 +281,15 @@ static void NightDiagEnumerateHashTable();
 
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("monstermark");
-    if (!SelfVerifyInit("monstermark")) return;
-    Log("[MonsterMark] mod_init — build 25094764 v1.09 %S\n", MONSTERMARK_VERSION);
+    Log("[MonsterMark] mod_init — build 25311578 v1.20 %S\n", MONSTERMARK_VERSION);
     QolRegisterHotKey("monstermark", "none");  // 无热键（自动生效）
+
+    NightHotConfigRegisterAll();  // 在 .inl 中实现（可访问 static 变量）
+    // v1.0.44 修复：hook 安装前先加载 JSON——HotConfig_Register 的默认值
+    // 部分仍是 v1.09 旧值（覆盖了源码初值），若不先 Poll，InstallNightMapMarkers
+    // 会用旧 RVA 装错位置（夜测无效的根因：装上后改变量也不会重装 hook）。
+    HotConfig_Poll();  // 首次调用立即加载 QoL_hot.json / 覆盖文件
+    HotConfig_DumpCE("monstermark");
 
     g_supportedExe = VerifyExeBuild();
     if (!g_supportedExe) {
@@ -298,27 +309,16 @@ extern "C" __declspec(dllexport) void mod_init(void) {
 }
 
 extern "C" __declspec(dllexport) void mod_tick(void) {
-    // NightMapMarkers 是 hook-based：安装后由游戏原生 redraw 驱动
-    // 诊断版：F7 边沿触发 callback 暴力扫描（仅诊断版使用）
-    static bool s_f7NeedsRelease = true;
-    bool f7Down = (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
-    bool f7Pressed = false;
-    if (s_f7NeedsRelease) {
-        if (!f7Down) s_f7NeedsRelease = false;
-    } else if (f7Down) {
-        f7Pressed = true;
-        s_f7NeedsRelease = true;
-    }
-    // F7: enumerate g_gimmickMgr hash table to find all live gimmicks
-    // (0x250690 direct call rejected — all SEH due to missing TLS context)
-    if (f7Pressed) {
-        Log("[MonsterMark] F7 pressed - enumerating gimmickMgr hash table\n");
-        NightDiagEnumerateHashTable();
-        Log("[MonsterMark] F7 hash table enumeration complete\n");
-        Log("[MonsterMark] F7 starting callback scan\n");
-        NightDiagScanCallbacks();
-        Log("[MonsterMark] F7 callback scan finished\n");
-    }
+    qol::budget::BeginFrame();  // P0: 帧锚定（幂等，多 DLL 安全）
+    static int s_bdgSlot = -1;  // P0 探针（惰性注册，析构自动上报）
+    if (s_bdgSlot < 0) s_bdgSlot = qol::budget::Slot("MonsterMark");
+    struct BdgGuard {
+        int slot; uint64_t t0;
+        ~BdgGuard() { qol::budget::Report(slot, qol::budget::NowUs() - t0); }
+    } bdgGuard = { s_bdgSlot, qol::budget::NowUs() };
+
+    if (QolGameBusy()) return;  // P1-2: 载入/菜单期间静默
+    HotConfig_Poll();  // 每 ~1s 检查 QoL_hot.json mtime，变化则重载
 }
 
 BOOL APIENTRY DllMain(HMODULE /*h*/, DWORD reason, LPVOID /*lpReserved*/) {

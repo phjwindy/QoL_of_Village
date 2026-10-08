@@ -1,5 +1,19 @@
-// autoharvest.cpp —— AutoHarvest: 自动收集树液提取器中的树液 (v1.8.9)
+// autoharvest.cpp —— AutoHarvest: 自动收集树液提取器中的树液 (v1.9.14 正式版转正：审查通过——DIAG宏0/时间链正确/F4可改键/8键v1.6.2已移除/F9诊断#if0)
 //
+// v1.9.2: F4 设箱触发收紧（用户反馈：菜单里按 F4 也弹“自动采集已开启”，
+//         与“对着箱子按才启动”的设计预期不符）——设箱搜索半径 300→95
+//         （一格范围，参照链式自动化的格距标准），只有站在箱子旁一格内
+//         才能设上，远处/菜单内误触大幅减少；设箱失败增加 HUD 提示
+//         （“附近没有箱子/请靠近箱子再按”），避免按了没反应的困惑。
+// v1.9.1: 引用计数泄漏修复——SapTransferSlot 中 AddRef(4e) 之后的 8 个失败
+//         路径均未释放 owned 引用（每次失败泄漏一个 0x2C0 僵尸物品）。
+//         引用计数语义经反汇编实锤：memset 归零后 ctor(0xFF870) 不写 [item+8]
+//         （引用从 0 起）；4e 的 AddRef 即唯一 owned ref；intrusiveRelease
+//         归零走 vtable[0] 销毁，与游戏原生释放（0x166510）一致；ctor 内
+//         0x13B4F0(save,item) 为 FNV 哈希 ID 登记表不持引用 → 失败路径
+//         单次释放无双释放风险（v1.9.0 前的“宁可泄漏”系对注册语义误判）。
+//         成功路径账目原本平衡（入槽 +2-1=槽位持有；全合并 +1-1=销毁）。
+// v1.9.0: 空/失败 60s 重试、玩家移动 1 格立即重搜（搜索半径 1200）。
 // v1.8.9: 启动卡顿优化——①搜索半径 5000→1200（首搜候选减 90%+）；②AutoRun 首搜延迟 1 秒（避开 F4 帧峰值）；③aobscan 共享库 memchr+.text 限定提速（游戏加载期 AOB 扫描几百 ms→几十 ms）
 //
 // v1.8.7: 代码审计修复——①增量触发缓存提取器列表（保底路径复用指针不跳过采集）；
@@ -48,11 +62,15 @@
 #include <atomic>
 
 #include "logging.h"
+#include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
+#include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
 #include "hotkey.h"
+#include "game_window.h"   // HUD owner 绑定游戏窗口
+#include "patch_safety.h"
 
 // 日志开关：发布版禁用日志输出
 // 调试时取消注释下行即可开启日志
-// #define AUTOHARVEST_LOGGING
+// #define AUTOHARVEST_LOGGING   // v1.9.14 转正：日志关闭（定位时取消注释重编）
 #ifdef AUTOHARVEST_LOGGING
 #else
   #define LogOpen(x)  ((void)0)
@@ -61,13 +79,18 @@
   #define LogClose()  ((void)0)
 #endif
 
+// [diag] 诊断日志门控（默认关）；调试时 #define DIAG_AUTOHARVEST 1 开启
+#ifndef DIAG_AUTOHARVEST
+#define DIAG_AUTOHARVEST 0
+#endif
+
 using u64 = std::uint64_t;
 using u32 = std::uint32_t;
 
 // ============================================================
-// 常量（build 25094764 / v1.09）
+// 常量（build 25311578 / v1.20，2026-09-30 由 ChestSort/ProductionAuto 实测迁移）
 // ============================================================
-static constexpr uintptr_t RVA_GAME_ROOT = 0x10D4950;
+static constexpr uintptr_t RVA_GAME_ROOT = 0x10FCBB0;
 
 // ---- 指针链偏移（与 ChestSort / AutoFish 一致）----
 static constexpr uintptr_t ROOT_PLAYER_OFFSET       = 0x208;
@@ -76,8 +99,8 @@ static constexpr uintptr_t PLAYER_ITEMS_OFFSET         = 0x32c0;
 
 // ---- 世界对象注册表 / 空间搜索（与 ChestSort 一致）----
 // v1.09 (build 25094764): RTTI 链扫描确认 vtable 从 0xE17168 移至 0xE1C168
-static constexpr uintptr_t WORLD_OBJECT_REGISTRY_RVA     = 0x10DCA20;
-static constexpr uintptr_t SEARCH_CALLBACK_VTABLE_RVA    = 0xE1C168;   // v1.09 RTTI 重定位 (旧 0xE17168)
+static constexpr uintptr_t WORLD_OBJECT_REGISTRY_RVA     = 0x1104C80;
+static constexpr uintptr_t SEARCH_CALLBACK_VTABLE_RVA    = 0xE3E608;   // v1.20 ALL_OBJECTS vtable（与 ChestSort 一致）
 static constexpr uintptr_t ROOT_MAP_OWNER_OFFSET    = 0x268;
 static constexpr uintptr_t MAP_INFO_OFFSET          = 0x0d8;
 static constexpr uintptr_t MAP_SPATIAL_OWNER_OFFSET = 0x030;
@@ -85,7 +108,7 @@ static constexpr uintptr_t MAP_SPATIAL_INDEX_OFFSET = 0x6e0;
 
 // ---- Gimmick / 物品偏移（与 ChestSort 一致）----
 static constexpr uintptr_t GIMMICK_DATA_HOLDER_OFFSET  = 0x240;
-static constexpr uintptr_t GIMMICK_MODULE_NAME_OFFSET = 0x0d8;
+static constexpr uintptr_t GIMMICK_MODULE_NAME_OFFSET = 0x0E0;  // v1.20: 0xD8→0xE0
 static constexpr uintptr_t GIMMICK_POSITION_OFFSET    = 0x0f0;
 static constexpr uintptr_t STATUS_ITEMS_OFFSET        = 0x2b8;
 static constexpr uintptr_t ITEM_DATA_HOLDER_OFFSET    = 0x240;
@@ -101,8 +124,8 @@ static constexpr uintptr_t RVA_RAW_VECTOR_FREE    = 0;  // AOB 扫描获得
 static constexpr uintptr_t RVA_INTRUSIVE_RELEASE   = 0;  // AOB 扫描获得
 static constexpr uintptr_t RVA_ITEM_ADJUST         = 0;  // AOB 扫描获得
 static constexpr uintptr_t RVA_PLAYER_CAPACITY     = 0;  // AOB 扫描获得
-static constexpr uintptr_t RVA_BATCH_RECALCULATE   = 0x13CE10;
-static constexpr uintptr_t RVA_BATCH_UI_REFRESH    = 0x0F1310;  // v1.09 重定位（旧 0x0F1950）
+static constexpr uintptr_t RVA_BATCH_RECALCULATE   = 0x1470C0;
+static constexpr uintptr_t RVA_BATCH_UI_REFRESH    = 0x0FB170;  // v1.20（与 ChestSort 一致）
 static constexpr uintptr_t RVA_BATCH_DIRTY         = 0;  // AOB 扫描获得
 
 // ---- 生产机状态结构偏移（build 25094764 / v1.09，从 ProductionAuto 适配）----
@@ -121,20 +144,20 @@ static constexpr size_t    SAP_MACHINE_SLOTS            = 3;
 static constexpr size_t    SAP_SLOT_INGREDIENTS         = 8;   // 每槽 8 个条目（level1 只提交前 8 个）
 static constexpr size_t    SAP_CHEST_SLOTS              = 30;  // 存储箱子 30 格
 
-// ---- 生产函数 RVA（build 25094764 / v1.09，version_manifest.h 已验证）----
-static constexpr uintptr_t RVA_SAP_OUTPUT_HELPER        = 0x165E70;  // GimmickProcessPopItem 内部完成辅助
-static constexpr uintptr_t RVA_SAP_STATUS_INT_LOOKUP    = 0x150B90;  // status+0x18 map 查找（find-or-insert）v1.09 +0x80
-static constexpr uintptr_t RVA_SAP_STATUS_U64_LOOKUP    = 0x150D50;  // status+0x58 map 查找（find-or-insert）v1.09 +0x80
-static constexpr uintptr_t RVA_SAP_STATUS_EVENT_LOOKUP  = 0x150770;  // 事件 owner map 查找 v1.09 +0x80
-static constexpr uintptr_t RVA_SAP_STATUS_EVENT_NOTIFY  = 0x150590;  // 事件通知
-static constexpr uintptr_t RVA_SAP_ITEM_ALLOCATE        = 0x8B18D0;  // 物品内存分配（size→ptr）
-static constexpr uintptr_t RVA_SAP_ITEM_CTOR            = 0xFF870;   // CItemStatus 构造（memory, save, itemId）
-static constexpr uintptr_t RVA_SAP_ITEM_SET_COUNT       = 0xFF5D0;   // 设置堆叠数（item, count）
-static constexpr uintptr_t RVA_SAP_ITEM_IS_STACKABLE    = 0x0FFE30;  // 查询物品可否堆叠（item）→ bool v1.09 +0x40
-static constexpr uintptr_t RVA_SAP_CHEST_PUSH           = 0x34E710;  // 入箱（GimmickProcessPushItem 内部）
-static constexpr uintptr_t RVA_SAP_CHEST_COMMIT         = 0x34F410;  // 入箱提交
-static constexpr uintptr_t RVA_SAP_SAVE_DATA_GLOBAL     = 0x10D4950; // 全局 save data 指针（[base+RVA] → savePtr, ctor 第 2 参数）
-static constexpr uintptr_t RVA_SAP_NATIVE_COLLECT       = 0x271560;  // native_collect（游戏原生收集函数）v1.09 +0x950
+// ---- 生产函数 RVA（build 25311578 / v1.20，ProductionAuto v1.1.43-diag 实测值）----
+static constexpr uintptr_t RVA_SAP_OUTPUT_HELPER        = 0x170280;  // GimmickProcessPopItem 内部完成辅助
+static constexpr uintptr_t RVA_SAP_STATUS_INT_LOOKUP    = 0x15AE10;  // status+0x18 map 查找（find-or-insert）
+static constexpr uintptr_t RVA_SAP_STATUS_U64_LOOKUP    = 0x15AFD0;  // status+0x58 map 查找（find-or-insert）
+static constexpr uintptr_t RVA_SAP_STATUS_EVENT_LOOKUP  = 0x15A9F0;  // 事件 owner map 查找
+static constexpr uintptr_t RVA_SAP_STATUS_EVENT_NOTIFY  = 0x15A810;  // 事件通知
+static constexpr uintptr_t RVA_SAP_ITEM_ALLOCATE        = 0x8D2980;  // 物品内存分配（size→ptr）
+static constexpr uintptr_t RVA_SAP_ITEM_CTOR            = 0x109100;  // CItemStatus 构造（memory, save, itemId）
+static constexpr uintptr_t RVA_SAP_ITEM_SET_COUNT       = 0x108E60;  // 设置堆叠数（item, count）
+static constexpr uintptr_t RVA_SAP_ITEM_IS_STACKABLE    = 0x1096C0;  // 查询物品可否堆叠（item）→ bool
+static constexpr uintptr_t RVA_SAP_CHEST_PUSH           = 0x35E4E0;  // 入箱（GimmickProcessPushItem 内部）
+static constexpr uintptr_t RVA_SAP_CHEST_COMMIT         = 0x35F1E0;  // 入箱提交
+static constexpr uintptr_t RVA_SAP_SAVE_DATA_GLOBAL     = 0x10FCBB0; // 全局 save data 指针（与 RVA_GAME_ROOT 同）
+static constexpr uintptr_t RVA_SAP_NATIVE_COLLECT       = 0x27E460;  // native_collect（游戏原生收集函数）
 static constexpr uintptr_t SAP_ITEM_ALLOC_SIZE           = 0x2C0;    // CItemStatus 分配大小（反汇编 0x16614C 确认）
 static constexpr uintptr_t SAP_ITEM_REF_COUNT_OFFSET    = 0x08;     // CItemStatus 引用计数（AddRef/Release 用）
 static constexpr uintptr_t SAP_ITEM_RANK_OFFSET         = 0x280;    // CItemStatus rank 字段（反汇编 0x1664EC 确认）
@@ -163,7 +186,7 @@ static constexpr size_t kAOBCount = sizeof(kAOBs) / sizeof(kAOBs[0]);
 // ---- 采集参数 ----
 static constexpr float  HARVEST_RADIUS = 2000.0f;      // v1.8.9: 搜索半径 5000→2000（4 格世界网格，首搜候选减 80%+，已注册提取器不受影响）
 static constexpr float  HARVEST_RADIUS_SQ = HARVEST_RADIUS * HARVEST_RADIUS;
-static constexpr float  CHEST_SET_RADIUS = 300.0f;   // F4 设置箱子的搜索半径
+static constexpr float  CHEST_SET_RADIUS = 95.0f;    // v1.9.2: F4 设箱搜索半径（一格范围，参照链式自动化格距；旧值 300 导致菜单/远处误触）
 static constexpr float  CHEST_SET_RADIUS_SQ = CHEST_SET_RADIUS * CHEST_SET_RADIUS;
 static constexpr size_t MAX_SEARCH_RESULTS = 512;     // 搜索半径缩小后候选量大减
 static constexpr size_t MAX_SEARCH_CAPACITY = 16384;
@@ -339,14 +362,7 @@ static bool ReadPtr(const void* obj, uintptr_t off, void** out) {
 // 内存写入工具（与 AutoFish 一致）
 // ============================================================
 static bool WriteMem(void* target, const void* data, size_t size) {
-    if (!target || !data || size == 0) return false;
-    DWORD old = 0;
-    if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &old)) return false;
-    memcpy(target, data, size);
-    const bool readback = memcmp(target, data, size) == 0;
-    VirtualProtect(target, size, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), target, size);
-    return readback;
+    return qol::WritePatchChecked(target, data, size);
 }
 
 static bool SealExecutableMemory(void* address, size_t size) {
@@ -712,7 +728,9 @@ static bool IsSapExtractorStatus(void* status) {
     bool match = (strcmp(buf, "gimmick_sap_extractor") == 0);
     if (!match) {
         static int s_logCnt = 0;
+#if DIAG_AUTOHARVEST
         if (s_logCnt < 5) { s_logCnt++; Log("[AutoHarvest] [diag-sap] name='%s' match=0", buf); }
+#endif
     }
     return match;
 }
@@ -803,7 +821,8 @@ static size_t g_cachedExtractorCount = 0;
 static constexpr int    SHARD_GRID = 4;                     // 4×4 = 16 小块
 static constexpr int    SHARD_GRID_TOTAL = SHARD_GRID * SHARD_GRID;
 static constexpr DWORD  SHARD_SCAN_INTERVAL_MS = 30000;     // 成功搜索：30 秒后重搜
-static constexpr DWORD  SHARD_RETRY_INTERVAL_MS = 10000;    // 空/失败：10 秒后重试
+static constexpr DWORD  SHARD_RETRY_INTERVAL_MS = 60000;    // v1.9.0: 空/失败：60 秒后重试（无采集物区域降耗，玩家移动会立即重搜）
+static constexpr DWORD  SHARD_MOVE_RETRY_MIN_MS = 2000;   // v1.9.5: 移动触发重搜最小间隔（原每 0.5s 移动即全城 16 块重搜 ~5.7ms/帧，实测持续卡顿）
 struct ShardSearchState {
     bool active = false;            // 一轮分块搜索进行中
     int gridIndex = 0;              // 当前块索引（0..SHARD_GRID_TOTAL-1）
@@ -813,6 +832,7 @@ struct ShardSearchState {
     size_t foundCount = 0;
     DWORD lastScanTick = 0;         // 上次开始一轮搜索的时间
     DWORD firstSearchDeferUntil = 0; // v1.8.9: 首轮延迟截止（避开 F4 按下帧）
+    float lastScanX = 0, lastScanY = 0; // v1.9.0: 上次搜索时玩家位置（移动超阈值立即重搜）
     bool lastResultEmpty = true;    // 上一轮是否空/失败（决定 10s vs 30s 重搜间隔）
 };
 static ShardSearchState g_shardSearch;
@@ -871,6 +891,19 @@ static size_t SearchSapExtractors(void* spatialIndex, const float* playerPos,
 }
 
 
+
+// v1.9.6: SEH 包装的 itemAdjust 调用——防止原生函数异常导致崩溃（H8+D1）
+// 返回 false 表示调用异常（SEH 捕获），调用方应执行回滚或中止
+__declspec(noinline) static bool SafeItemAdjust(void* item, int delta) {
+    if (!item || !G::itemAdjust) return false;
+    __try {
+        G::itemAdjust(item, delta);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("[AutoHarvest] [SEH] itemAdjust 异常 item=%p delta=%d", item, delta);
+        return false;
+    }
+}
 
 // ============================================================
 // 背包→存储箱子转移（来自 ChestSort DoSort 的核心逻辑）
@@ -937,17 +970,25 @@ static size_t TransferToChest(void* player, void* chestStatus) {
             if (remainingCap < moveCount) goto skip_item;
         }
 
-        G::itemAdjust(targetItem, moveCount);
+        // v1.9.6 H8+D1: itemAdjust 调用全部改用 SafeItemAdjust（SEH 保护）
+        if (!SafeItemAdjust(targetItem, moveCount)) goto skip_item;
         int targetAfter = 0;
         if (!ReadStackCount(targetItem, &targetAfter) || targetAfter != targetBefore + moveCount) {
-            G::itemAdjust(targetItem, -moveCount);
+            if (!SafeItemAdjust(targetItem, -moveCount))
+                Log("[AutoHarvest] [SEH] 回滚 targetItem 失败! itemId=%llu", info.itemId);
             goto skip_item;
         }
-        G::itemAdjust(item, -moveCount);
+        if (!SafeItemAdjust(item, -moveCount)) {
+            if (!SafeItemAdjust(targetItem, -moveCount))
+                Log("[AutoHarvest] [SEH] 回滚 targetItem 失败! itemId=%llu", info.itemId);
+            goto skip_item;
+        }
         int sourceAfter = 0;
         if (!ReadStackCount(item, &sourceAfter) || sourceAfter != 0) {
-            G::itemAdjust(targetItem, -moveCount);
-            G::itemAdjust(item, moveCount);
+            if (!SafeItemAdjust(targetItem, -moveCount))
+                Log("[AutoHarvest] [SEH] 回滚 targetItem 失败! itemId=%llu", info.itemId);
+            if (!SafeItemAdjust(item, moveCount))
+                Log("[AutoHarvest] [SEH] 恢复 sourceItem 失败! itemId=%llu", info.itemId);
             goto skip_item;
         }
 
@@ -1012,6 +1053,7 @@ static size_t TransferToChest(void* player, void* chestStatus) {
 //     4. 在存储箱子中找同类堆合并（AddReference + itemAdjust）或写入空闲槽
 //     5. 清空提取器槽位（count→0, itemID→0, 时间戳→0, 0x2b8 backing→release+置零）
 //     6. 转移完 G::intrusiveRelease 释放物化物品的 owned 引用
+//        （v1.9.1：所有失败路径同样释放——引用计数语义见 SapReleaseOwnedRef 注释）
 
 // ---- 移植辅助：读 status map 值（哈希表遍历，键为短字符串）----
 static bool SapReadStatusMapValue(void* status, uintptr_t mapOffset,
@@ -1250,6 +1292,22 @@ static bool SapPlanUnchanged(const SapTransferPlan& before,
 // 时间判断内联到 SapTransferSlot 和 HasSapToCollect 中（下方）。
 // 清空后重置 start 时间戳（见 SapTransferSlot L9 区块）保证下一轮生产周期正常。
 
+// ---- v1.9.1: owned 引用释放辅助 ----
+// 引用计数语义（2026-09-14 反汇编实锤）：
+//   - memset(0x2C0) 归零后 ctor(0xFF870) 不写 [item+8]，引用计数从 0 起
+//   - SapTransferSlot 4e 的 AddRef 即唯一 owned ref（对应原生 0x166223
+//     的 lock inc）；槽位插入的 AddRef 是槽位自己的引用
+//   - intrusiveRelease 递减，归零走 vtable[0] 销毁——与游戏原生释放路径
+//     （0x166510 lock xadd + old==1 → vtable[0]）一致
+//   - ctor 内 0x13B4F0(save,item) 是 FNV 哈希 ID 登记表，不持引用
+//     （原生对已登记物品同样 ref=0 即销毁）→ 单次释放无双释放风险，
+//     修复 v1.9.0 前“宁可泄漏也不双重释放”的误判
+static void SapReleaseOwnedRef(void* item) {
+    if (!item) return;
+    void* ref = item;
+    if (G::intrusiveRelease) G::intrusiveRelease(&ref);
+}
+
 // ---- 转移一个槽位的产出到存储箱 ----
 // 返回 true = 已转移（可能部分转移）
 static bool SapTransferSlot(void* player, void* extractorStatus, void* chestStatus,
@@ -1438,6 +1496,7 @@ static bool SapTransferSlot(void* player, void* extractorStatus, void* chestStat
         G::sapItemSetCount(item, amount);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         Log("[AutoHarvest] [sap] sapItemSetCount SEH 异常 (slot=%zu)", slot);
+        SapReleaseOwnedRef(item);   // v1.9.1: 失败路径释放 owned 引用（防泄漏）
         return false;
     }
     // 4g. 设置 rank (item+0x280 = expectedRank) —— 反汇编 0x1664EC 确认
@@ -1452,7 +1511,10 @@ static bool SapTransferSlot(void* player, void* extractorStatus, void* chestStat
         Log("[AutoHarvest] [sap] 弹出物品与计划不符 itemId=%llu x%d rank=%d (期望 %llu x%d rank=%d)",
             (unsigned long long)popped.itemId, popped.stackCount, popped.rank,
             (unsigned long long)itemId, amount, expectedRank);
-        // 保留物品引用（不释放）——宁可泄漏也不双重释放
+        // v1.9.1: 释放 owned 引用——反汇编实锤 ctor 的 ID 登记表不持引用，
+        // 且此时尚未入槽/未合并，我们是唯一持有者，单次释放无双释放风险
+        // （v1.9.0 的“宁可泄漏”判断源于对 0x13B4F0 注册语义的误判）
+        SapReleaseOwnedRef(item);
         return false;
     }
 
@@ -1461,7 +1523,12 @@ static bool SapTransferSlot(void* player, void* extractorStatus, void* chestStat
     bool commitFailed = false;
     for (; appliedMerges < plan.mergeCount; ++appliedMerges) {
         const SapMergeTarget& target = plan.merges[appliedMerges];
-        G::itemAdjust(target.stack, target.amount);
+        // v1.9.6 H8+D1: SEH 保护 itemAdjust
+        if (!SafeItemAdjust(target.stack, target.amount)) {
+            ++appliedMerges;
+            commitFailed = true;
+            break;
+        }
         int afterCount = 0;
         if (!ReadStackCount(target.stack, &afterCount) || afterCount != target.before + target.amount) {
             ++appliedMerges;
@@ -1473,10 +1540,12 @@ static bool SapTransferSlot(void* player, void* extractorStatus, void* chestStat
         // v1.8.0: 真正回滚——撤销已成功的合并（反向 itemAdjust）
         for (size_t i = 0; i + 1 < appliedMerges; ++i) {
             const SapMergeTarget& target = plan.merges[i];
-            G::itemAdjust(target.stack, -target.amount);
+            if (!SafeItemAdjust(target.stack, -target.amount))
+                Log("[AutoHarvest] [sap] SEH: 回滚合并失败 slot=%zu i=%zu", slot, i);
         }
         Log("[AutoHarvest] [sap] 合并失败，已回滚 %zu 项合并 (slot=%zu)",
             appliedMerges > 0 ? appliedMerges - 1 : 0, slot);
+        SapReleaseOwnedRef(item);   // v1.9.1: 失败路径释放 owned 引用（防泄漏）
         return false;
     }
 
@@ -1484,7 +1553,8 @@ static bool SapTransferSlot(void* player, void* extractorStatus, void* chestStat
     auto rollbackMerges = [&]() {
         for (size_t i = 0; i < appliedMerges; ++i) {
             const SapMergeTarget& t = plan.merges[i];
-            G::itemAdjust(t.stack, -t.amount);
+            if (!SafeItemAdjust(t.stack, -t.amount))
+                Log("[AutoHarvest] [sap] SEH: 回滚合并失败 slot=%zu i=%zu", slot, i);
         }
         Log("[AutoHarvest] [sap] 后续步骤失败，已回滚 %zu 项合并 (slot=%zu)",
             appliedMerges, slot);
@@ -1492,11 +1562,12 @@ static bool SapTransferSlot(void* player, void* extractorStatus, void* chestStat
 
     // 7. 弹出物品剩余数量调整（amount - 已合并）
     const int sourceDelta = plan.remaining - amount;
-    if (sourceDelta != 0) G::itemAdjust(item, sourceDelta);
+    if (sourceDelta != 0) SafeItemAdjust(item, sourceDelta);
     int sourceCount = 0;
     if (!ReadStackCount(item, &sourceCount) || sourceCount != plan.remaining) {
         Log("[AutoHarvest] [sap] 剩余数量调整失败 (slot=%zu)", slot);
         rollbackMerges();
+        SapReleaseOwnedRef(item);   // v1.9.1: 失败路径释放 owned 引用（防泄漏）
         return false;
     }
 
@@ -1505,12 +1576,14 @@ static bool SapTransferSlot(void* player, void* extractorStatus, void* chestStat
         if (!plan.vectorBegin || plan.freeSlot >= SAP_CHEST_SLOTS) {
             Log("[AutoHarvest] [sap] 空槽越界 (slot=%zu)", slot);
             rollbackMerges();
+            SapReleaseOwnedRef(item);   // v1.9.1: 失败路径释放 owned 引用（防泄漏）
             return false;
         }
         void** freeSlot = &plan.vectorBegin[plan.freeSlot];
         if (!IsReadable(freeSlot, sizeof(void*)) || *freeSlot != nullptr) {
             Log("[AutoHarvest] [sap] 空槽被占用 (slot=%zu)", slot);
             rollbackMerges();
+            SapReleaseOwnedRef(item);   // v1.9.1: 失败路径释放 owned 引用（防泄漏）
             return false;
         }
         // 持有引用后写入
@@ -1519,9 +1592,11 @@ static bool SapTransferSlot(void* player, void* extractorStatus, void* chestStat
         void* observed = InterlockedCompareExchangePointer(
             reinterpret_cast<void* volatile*>(freeSlot), item, nullptr);
         if (observed != nullptr) {
-            // 槽位已被占用：撤销 AddRef（不覆盖）
+            // 槽位已被占用：撤销槽位 AddRef（不覆盖）+ 释放 owned 引用（v1.9.1）
+            // ref=2 → 两次释放归零销毁（槽位未写入，我们是唯一持有者）
             void* ownedRef = item;
             if (G::intrusiveRelease) G::intrusiveRelease(&ownedRef);
+            SapReleaseOwnedRef(item);
             Log("[AutoHarvest] [sap] 空槽写入冲突 (slot=%zu)", slot);
             rollbackMerges();
             return false;
@@ -1529,6 +1604,7 @@ static bool SapTransferSlot(void* player, void* extractorStatus, void* chestStat
         if (!IsReadable(freeSlot, sizeof(void*)) || *freeSlot != item) {
             Log("[AutoHarvest] [sap] 空槽写入未验证 (slot=%zu)", slot);
             rollbackMerges();
+            SapReleaseOwnedRef(item);   // v1.9.1: 释放 owned（槽位引用随物品留在槽内）
             return false;
         }
     }
@@ -1544,9 +1620,21 @@ static bool SapTransferSlot(void* player, void* extractorStatus, void* chestStat
         std::int64_t nowSec = 0;
         if (!ReadGameRawSecond(&nowSec) || nowSec <= 0) {
             Log("[AutoHarvest] [sap] 游戏时间读取失败，中止清槽避免不一致 (slot=%zu)", slot);
-            // 释放物化物品引用后返回 false
+            // v1.9.6 D2: 撤销已写入的箱子空闲槽位，防止物品复制
+            // （CAS 写箱成功 + 清槽失败 = 物品既在箱中又在提取器中 → 下次收集复制）
+            if (plan.usesFreeSlot) {
+                void** freeSlot = &plan.vectorBegin[plan.freeSlot];
+                if (IsReadable(freeSlot, sizeof(void*)) && *freeSlot == item) {
+                    InterlockedCompareExchangePointer(
+                        reinterpret_cast<void* volatile*>(freeSlot), nullptr, item);
+                    Log("[AutoHarvest] [sap] D2 修复：已撤销空闲槽写入 (slot=%zu freeSlot=%zu)",
+                        slot, plan.freeSlot);
+                }
+            }
+            // 释放物化物品引用（owned ref + slot AddRef 两次释放，ref 2→0 销毁）
             void* ownedRef = item;
             if (G::intrusiveRelease) G::intrusiveRelease(&ownedRef);
+            SapReleaseOwnedRef(item);
             rollbackMerges();
             return false;
         }
@@ -1606,7 +1694,9 @@ static size_t CollectFromSapExtractor(void* player, void* extractorStatus, void*
     if (!player || !extractorStatus || !chestStatus) return 0;
     if (!G::sapItemAllocate || !G::sapItemCtor || !G::sapItemSetCount ||
         !G::sapStatusEventNotify || !G::sapStatusIntLookup || !G::sapStatusU64Lookup) {
+#if DIAG_AUTOHARVEST
         Log("[AutoHarvest] [diag-sap] sap 函数未绑定，跳过");
+#endif
         return 0;
     }
 
@@ -1614,7 +1704,9 @@ static size_t CollectFromSapExtractor(void* player, void* extractorStatus, void*
     size_t slotLimit = 1;
     if (!SapReadSlotLimit(extractorStatus, &slotLimit) || slotLimit == 0 ||
         slotLimit > SAP_MACHINE_SLOTS) {
+#if DIAG_AUTOHARVEST
         Log("[AutoHarvest] [diag-sap] 槽位上限读取失败 status=%p", extractorStatus);
+#endif
         return 0;
     }
 
@@ -1849,7 +1941,7 @@ static void ShowHudMessage(const wchar_t* line1, const wchar_t* line2,
 
 // ============================================================
 // 游戏时钟读取（源自 AutoFish 已验证路径）
-// 路径：game_root(+0x10D4950) -> +0x208 (save data) -> +0x3270 (raw second)
+// 路径：game_root(+0x10FCBB0) -> +0x208 (save data) -> +0x3270 (raw second)
 // 换算：dayIndex = rawSecond / 86400
 // ============================================================
 static constexpr uintptr_t SAVE_DATA_OFFSET      = 0x208;    // game_root -> save data
@@ -2032,6 +2124,15 @@ static void HandleSetStorageChest() {
 
     if (chestCount == 0) {
         Log("[AutoHarvest] 附近 %d 范围内没有箱子", (int)CHEST_SET_RADIUS);
+        // v1.9.2: 半径收紧到一格后“没对准”概率上升——加 HUD 提示避免按了没反应
+        {
+            wchar_t line2[64];
+            _snwprintf_s(line2, 64, _TRUNCATE,
+                L"\x8BF7\x9760\x8FD1\x7BB1\x5B50\x518D\x6309\x0020%s",
+                HudKeyName(0, L"F4"));
+            ShowHudMessage(L"\x9644\x8FD1\x6CA1\x6709\x7BB1\x5B50",
+                           line2, RGB(200, 120, 100), 2000);
+        }
         return;
     }
 
@@ -2170,6 +2271,8 @@ static bool InitHud() {
         HARVEST_HUD_CLASS, L"", WS_POPUP, 0, 0, width, height,
         nullptr, nullptr, g_autoharvestModule, nullptr);
     if (!g_hudWindow) return false;
+    // v1.9.12: 移除游戏窗口 owner 绑定（GWLP_HWNDPARENT）——owned TOPMOST 窗口链
+    // 干扰 Alt+Tab 前台切换，游戏窗口切不回（切窗修复第四轮，详见 game_window.h v1.5）
 
     SetLayeredWindowAttributes(g_hudWindow, 0, 228, LWA_ALPHA);
     HRGN rounded = CreateRoundRectRgn(0, 0, width + 1, height + 1, 12, 12);
@@ -2181,7 +2284,7 @@ static void UpdateHudPosition() {
     if (!g_hudWindow) return;
     MONITORINFO mi = {};
     mi.cbSize = sizeof(mi);
-    HMONITOR mon = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
+    HMONITOR mon = MonitorFromWindow(QolFindGameWindow(), MONITOR_DEFAULTTOPRIMARY);
     if (!GetMonitorInfoW(mon, &mi)) {
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
     }
@@ -2250,13 +2353,15 @@ static const wchar_t* HudKeyName(int idx, const wchar_t* fallback) {
 
 static void PumpHud() {
     if (!g_hudWindow) return;
+    if (!QolGameInForeground()) { QolHudGuardVisibility(g_hudWindow); return; }  // v1.6: 失焦守卫兜底（alpha 渐隐）后 pump 静默
     MSG msg = {};
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+    while (PeekMessageW(&msg, g_hudWindow, 0, 0, PM_REMOVE)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
     if (IsWindowVisible(g_hudWindow) && g_hudHideAt != 0 &&
         GetTickCount64() >= g_hudHideAt) {
+        QolHudMarkHiddenByMod(g_hudWindow);  // MOD 主动隐藏：清守卫标记
         ShowWindow(g_hudWindow, SW_HIDE);
         g_hudHideAt = 0;
     }
@@ -2266,7 +2371,6 @@ static void PumpHud() {
 // AOB 扫描（从 aobscan.h 引入）
 // ============================================================
 #include "aobscan.h"
-#include "selfverify.h"
 
 
 // ============================================================
@@ -2315,21 +2419,30 @@ static void PollInput() {
     // ---- 分块空间搜索（每帧只搜一个小块，单帧 DoSpatialSearch 开销恒定）----
     // v1.8.9: 由「单次全范围搜索+过滤分片」改为「搜索本身分块」——每帧执行一个
     //         小块的 DoSpatialSearch，块内候选少，单帧不卡；16 帧完成一轮全范围覆盖
-    if (G::runMode == G::RunMode::AutoRun) {
+    if (G::runMode == G::RunMode::AutoRun && !QolGameBusy()) {
         WorldContext ctx = {};
         if (GetWorldContext(&ctx)) {
             // 本轮未开始：判断是否到了启动新一轮的时间
             if (!g_shardSearch.active) {
                 DWORD now = GetTickCount();
                 bool shouldSearch = false;
+                // v1.9.0: 玩家移动超过 1 格（200 世界单位）→ 立即重搜（进入可能有采集物的新区域）
+                float dx = ctx.position[0] - g_shardSearch.lastScanX;
+                float dy = ctx.position[1] - g_shardSearch.lastScanY;
+                bool movedFar = g_shardSearch.lastScanTick != 0 &&
+                    (dx * dx + dy * dy) > 200.0f * 200.0f;
                 if (g_shardSearch.lastScanTick == 0) {
                     // v1.8.9: 首轮延迟 1 秒——避开 F4 按下帧
                     if (g_shardSearch.firstSearchDeferUntil == 0) {
                         g_shardSearch.firstSearchDeferUntil = now + 1000;
                     }
                     shouldSearch = now >= g_shardSearch.firstSearchDeferUntil;
+                } else if (movedFar) {
+                    // v1.9.5: 移动触发重搜限流 2000ms（玩家快速移动
+                    // 时不再每帧触发全城 16 块搜索，卡顿消除）
+                    shouldSearch = now - g_shardSearch.lastScanTick >= SHARD_MOVE_RETRY_MIN_MS;
                 } else {
-                    // 空/失败 10 秒重试，成功 30 秒常规间隔
+                    // 空/失败 60 秒重试，成功 30 秒常规间隔
                     const DWORD interval = g_shardSearch.lastResultEmpty
                         ? SHARD_RETRY_INTERVAL_MS
                         : SHARD_SCAN_INTERVAL_MS;
@@ -2342,6 +2455,8 @@ static void PollInput() {
                     g_shardSearch.originX = ctx.position[0] - HARVEST_RADIUS;
                     g_shardSearch.originY = ctx.position[1] - HARVEST_RADIUS;
                     g_shardSearch.lastScanTick = now;
+                    g_shardSearch.lastScanX = ctx.position[0];
+                    g_shardSearch.lastScanY = ctx.position[1];
                     g_shardSearch.lastResultEmpty = true;  // 本轮找到任何提取器后置 false
                     Log("[AutoHarvest] 分块搜索启动: %d 块", SHARD_GRID_TOTAL);
                 }
@@ -2425,7 +2540,7 @@ static void PollInput() {
 
     // ---- 采集周期 ----
     // v1.8.7: 修复 DWORD 无符号溢出——原 now+2500 方案使 now-(now+2500) 下溢为巨大值立即触发
-    if (G::runMode == G::RunMode::AutoRun) {
+    if (G::runMode == G::RunMode::AutoRun && !QolGameBusy()) {
         DWORD now = GetTickCount();
         if (G::lastHarvestTick == 0) {
             // 首次：设置当前时间，本轮跳过（延迟到下个 5s 周期），与 ProductionAuto 错开
@@ -2447,7 +2562,6 @@ static void PollInput() {
 // ============================================================
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("autoharvest");
-    if (!SelfVerifyInit("autoharvest")) return;
     Log("[AutoHarvest] mod_init 开始");
     QolHotKeysInit(&g_hotkeys, "autoharvest");
     QolHotKeysSetDefault(&g_hotkeys, "F4");
@@ -2491,18 +2605,31 @@ extern "C" __declspec(dllexport) void mod_init(void) {
         Log("[AutoHarvest] AOB command_capacity => 0x%p (OK)", (void*)ccAddr);
     }
 
-    // ---- 树液提取器生产函数绑定（RVA 直连，version_manifest.h 已验证 build 25094764 / v1.09）----
-    G::sapOutputHelper      = (FnSapOutputHelper)(G::base + RVA_SAP_OUTPUT_HELPER);
-    G::sapStatusIntLookup   = (FnSapStatusMapLookup)(G::base + RVA_SAP_STATUS_INT_LOOKUP);
-    G::sapStatusU64Lookup   = (FnSapStatusMapLookup)(G::base + RVA_SAP_STATUS_U64_LOOKUP);
-    G::sapStatusEventLookup = (FnSapStatusMapLookup)(G::base + RVA_SAP_STATUS_EVENT_LOOKUP);
-    G::sapStatusEventNotify = (FnSapStatusEventNotify)(G::base + RVA_SAP_STATUS_EVENT_NOTIFY);
-    G::sapItemAllocate      = (FnSapItemAllocate)(G::base + RVA_SAP_ITEM_ALLOCATE);
-    G::sapItemCtor          = (FnSapItemCtor)(G::base + RVA_SAP_ITEM_CTOR);
-    G::sapItemSetCount      = (FnSapItemSetCount)(G::base + RVA_SAP_ITEM_SET_COUNT);
-    G::sapItemIsStackable   = (FnSapItemIsStackable)(G::base + RVA_SAP_ITEM_IS_STACKABLE);
-    G::sapNativeCollect     = (FnSapNativeCollect)(G::base + RVA_SAP_NATIVE_COLLECT);
+    // ---- 树液提取器生产函数绑定（RVA 直连，v1.20 build 25311578 实测值）----
+    // v1.9.6 M8: 绑定前 IsReadable 验证——防止版本更新后 RVA 漂移导致崩溃
+    // 验证失败的 RVA 置 nullptr（禁用对应功能），不崩溃
+    auto SapBindIfReadable = [](uintptr_t rva, const char* name) -> uintptr_t {
+        uintptr_t addr = G::base + rva;
+        if (!IsReadable((const void*)addr, 16)) {
+            Log("[AutoHarvest] [FATAL] sap RVA %s=0x%X 不可读，置 nullptr 禁用", name, (unsigned)rva);
+            return 0;
+        }
+        return addr;
+    };
+
+    G::sapOutputHelper      = (FnSapOutputHelper)(SapBindIfReadable(RVA_SAP_OUTPUT_HELPER, "sapOutputHelper"));
+    G::sapStatusIntLookup   = (FnSapStatusMapLookup)(SapBindIfReadable(RVA_SAP_STATUS_INT_LOOKUP, "sapStatusIntLookup"));
+    G::sapStatusU64Lookup   = (FnSapStatusMapLookup)(SapBindIfReadable(RVA_SAP_STATUS_U64_LOOKUP, "sapStatusU64Lookup"));
+    G::sapStatusEventLookup = (FnSapStatusMapLookup)(SapBindIfReadable(RVA_SAP_STATUS_EVENT_LOOKUP, "sapStatusEventLookup"));
+    G::sapStatusEventNotify = (FnSapStatusEventNotify)(SapBindIfReadable(RVA_SAP_STATUS_EVENT_NOTIFY, "sapStatusEventNotify"));
+    G::sapItemAllocate      = (FnSapItemAllocate)(SapBindIfReadable(RVA_SAP_ITEM_ALLOCATE, "sapItemAllocate"));
+    G::sapItemCtor          = (FnSapItemCtor)(SapBindIfReadable(RVA_SAP_ITEM_CTOR, "sapItemCtor"));
+    G::sapItemSetCount      = (FnSapItemSetCount)(SapBindIfReadable(RVA_SAP_ITEM_SET_COUNT, "sapItemSetCount"));
+    G::sapItemIsStackable   = (FnSapItemIsStackable)(SapBindIfReadable(RVA_SAP_ITEM_IS_STACKABLE, "sapItemIsStackable"));
+    G::sapNativeCollect     = (FnSapNativeCollect)(SapBindIfReadable(RVA_SAP_NATIVE_COLLECT, "sapNativeCollect"));
+#if DIAG_AUTOHARVEST
     Log("[AutoHarvest] [diag] native_collect 绑定 %p", (void*)G::sapNativeCollect);
+#endif
         G::sapFunctionsReady = G::sapItemAllocate && G::sapItemCtor &&
                                G::sapItemSetCount && G::sapStatusEventNotify &&
                                G::sapStatusIntLookup && G::sapStatusU64Lookup;
@@ -2531,9 +2658,18 @@ extern "C" __declspec(dllexport) void mod_init(void) {
 }
 
 extern "C" __declspec(dllexport) void mod_tick(void) {
+    qol::budget::BeginFrame();  // P0: 帧锚定（幂等，多 DLL 安全）
+    static int s_bdgSlot = -1;  // P0 探针（惰性注册，析构自动上报）
+    if (s_bdgSlot < 0) s_bdgSlot = qol::budget::Slot("AutoHarvest");
+    struct BdgGuard {
+        int slot; uint64_t t0;
+        ~BdgGuard() { qol::budget::Report(slot, qol::budget::NowUs() - t0); }
+    } bdgGuard = { s_bdgSlot, qol::budget::NowUs() };
+
     if (!G::ready) return;
     QolHotkeyCheckReload(&g_hotkeys);
     PollInput();
+    QolHudGuardVisibility(g_hudWindow);  // v1.9.8: 失焦隐藏 HUD（不飘桌面）
 }
 
 extern "C" __declspec(dllexport) void unload(void) {

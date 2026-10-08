@@ -1,4 +1,4 @@
-// autofish.cpp —— 自动钓鱼（v1.4.0：vtable RVA 运行时回填 + 硬校验恢复）
+// autofish.cpp —— 自动钓鱼（v1.5.7 正式版：v1.20 (build 25311578) 适配；v1.5.0 起开关接入 QoL 快捷菜单）
 //
 // v1.3.4: AF-H2 修复——ReadFishingState 中添加 vtable 软校验（warn-only），
 //         记录运行时实际 vtable RVA 供后续精确回填。原 v1.09 适配时
@@ -14,20 +14,20 @@
 // 钓鱼状态机（CState_Player_FishingRod::update）8 个 Phase：
 //   0=待命/重抛  4=钓到鱼/收线动画  6=成功展示  7=玩家取消/收竿
 //
-// 补丁点（build 25094764 / v1.09）：
-//   minigame_settle_gate  RVA 0x382E7D  0F 84 81 01 00 00 -> 6 NOP
-//   note_hit_check       RVA 0x382EB4  0F 85 77 01 00 00 -> 6 NOP
-//   auto_reel_in         RVA 0x20D82E  74 1D               -> 2 NOP
+// 补丁点（build 25311578 / v1.20）：
+//   minigame_settle_gate  RVA 0x392BAD  0F 84 81 01 00 00 -> 6 NOP
+//   note_hit_check       RVA 0x392BE4  0F 85 77 01 00 00 -> 6 NOP
+//   auto_reel_in         RVA 0x218DEE  74 1D               -> 2 NOP
 //
-// 代码注入点（build 25094764）：
-//   common_exit          RVA 0x20E99A  Phase 6/7 公共退出点
-//   success_gate         RVA 0x20E84B  Phase 6 完成门
-//   cancel_request       RVA 0x20D3A3  玩家取消请求
-//   phase4_finish        RVA 0x20E6C9  Phase 4 动画结束
-//   monitor              RVA 0x20CE70  trampoline hook 监控钓鱼状态机
+// 代码注入点（build 25311578 / v1.20）：
+//   common_exit          RVA 0x219F46  Phase 6/7 公共退出点
+//   success_gate         RVA 0x219DF7  Phase 6 完成门
+//   cancel_request       RVA 0x218963  玩家取消请求
+//   phase4_finish        RVA 0x219C75  Phase 4 动画结束
+//   monitor              RVA 0x218430  trampoline hook 监控钓鱼状态机
 //
-// 垃圾排除注入点（build 25094764）：
-//   no_trash_hook        RVA 0x20FB15  钓到鱼后物品判定分支
+// 垃圾排除注入点（build 25311578 / v1.20）：
+//   no_trash_hook        RVA 0x21B0C5  钓到鱼后物品判定分支
 //   anchor: 45 85 FF 7E 4C (test r15d,r15d; jle +0x4C)
 //   垃圾物品 ID: 0x927C0 / 0x927CA / 0x927D4 / 0x927DE
 //
@@ -37,9 +37,8 @@
 // v1.3.2: HUD 布局调整——加大窗口高度，垃圾排除行下移避免与自动钓鱼文字重叠。
 // v1.3.3: HUD 微调——状态文字和垃圾排除文字限定 rect 高度，避免重叠。
 //
-// 切换键：键盘 9  切换 自动检测模式 开/关（默认开）
-//         键盘 F10 切换 垃圾排除 开/关（默认关闭）
-// 默认：自动检测开启，垃圾排除关闭。按 9 切换自动检测，按 F10 切换垃圾排除。
+// 切换键：v1.5.0 起热键 9/F10 已移除，开关改由 QoL 快捷菜单（F2）驱动
+// 默认：自动检测开启，垃圾排除关闭。
 // 左上角 HUD 仅在按键切换时显示，5 秒后消退（自动检测状态变化不弹窗）。
 
 #include <windows.h>
@@ -47,8 +46,13 @@
 #include <atomic>
 
 #include "logging.h"
-#include "memory_cache.h"  // v1.4.1: FastRegion 区域缓存
-#include "selfverify.h"
+#include "game_window.h"   // HUD owner 绑定游戏窗口
+#include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
+#include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
+#include "hot_config.h"
+#include "quickmenu.h"
+#include "memory_cache.h"
+#include "patch_safety.h"  // v1.4.1: FastRegion 区域缓存
 
 // 日志开关：发布版禁用日志输出
 // 调试时取消注释下行即可开启日志
@@ -77,9 +81,9 @@ struct PatchPoint {
 };
 
 static PatchPoint g_fishingPoints[3] = {
-    { 0x382E7D, 6, { 0x0F, 0x84, 0x81, 0x01, 0x00, 0x00 }, "minigame settle-gate" },
-    { 0x382EB4, 6, { 0x0F, 0x85, 0x77, 0x01, 0x00, 0x00 }, "note-hit check"      },
-    { 0x20D82E, 2, { 0x74, 0x1D },                         "auto reel-in"         },
+    { 0x392BAD, 6, { 0x0F, 0x84, 0x81, 0x01, 0x00, 0x00 }, "minigame settle-gate" },
+    { 0x392BE4, 6, { 0x0F, 0x85, 0x77, 0x01, 0x00, 0x00 }, "note-hit check"      },
+    { 0x218DEE, 2, { 0x74, 0x1D },                         "auto reel-in"         },
 };
 
 static const unsigned char kNops[8] = {
@@ -87,37 +91,42 @@ static const unsigned char kNops[8] = {
 };
 
 // ---- 代码注入 RVA ----
-static constexpr uintptr_t RVA_FISHING_COMMON_EXIT          = 0x20E99A;
-static constexpr uintptr_t RVA_FISHING_COMMON_EXIT_CONTINUE  = 0x20E9A1;
-static constexpr uintptr_t RVA_FISHING_UPDATE_EPILOGUE       = 0x20EA15;
+static volatile uintptr_t RVA_FISHING_COMMON_EXIT          = 0x219F46;
+static volatile uintptr_t RVA_FISHING_COMMON_EXIT_CONTINUE  = 0x219F4D;
+static volatile uintptr_t RVA_FISHING_UPDATE_EPILOGUE       = 0x219FC1;
 
-static constexpr uintptr_t RVA_FISHING_SUCCESS_COMPLETION_GATE = 0x20E84B;
-static constexpr uintptr_t RVA_FISHING_SUCCESS_GATE_CONTINUE   = 0x20E852;
+static volatile uintptr_t RVA_FISHING_SUCCESS_COMPLETION_GATE = 0x219DF7;
+static volatile uintptr_t RVA_FISHING_SUCCESS_GATE_CONTINUE   = 0x219DFE;
 
-static constexpr uintptr_t RVA_FISHING_CANCEL_REQUEST         = 0x20D3A3;
-static constexpr uintptr_t RVA_FISHING_CANCEL_REQUEST_CONTINUE = 0x20D3AE;
+static volatile uintptr_t RVA_FISHING_CANCEL_REQUEST         = 0x218963;
+static volatile uintptr_t RVA_FISHING_CANCEL_REQUEST_CONTINUE = 0x21896E;
 
-static constexpr uintptr_t RVA_FISHING_PHASE4_FINISH          = 0x20E6C9;
-static constexpr uintptr_t RVA_FISHING_PHASE4_CLEANUP         = 0x20E6D2;
-static constexpr uintptr_t RVA_FISHING_PHASE4_NATIVE_CONTINUE = 0x20E6D1;
-static constexpr uintptr_t RVA_FISHING_NATIVE_ACTION_FINISH   = 0x206820;
+static volatile uintptr_t RVA_FISHING_PHASE4_FINISH          = 0x219C75;
+static volatile uintptr_t RVA_FISHING_PHASE4_CLEANUP         = 0x219C7E;
+static volatile uintptr_t RVA_FISHING_PHASE4_NATIVE_CONTINUE = 0x219C7D;
+static volatile uintptr_t RVA_FISHING_NATIVE_ACTION_FINISH   = 0x211DE0;
 
-// v1.09: vtable RVA 已通过运行时日志回填（v1.3.9-diag 采集，2000 次全部一致 0xE164D0）
-static constexpr uintptr_t RVA_FISHING_VTABLE          = 0xE164D0; // v1.4.0: 运行时回填确认
-static constexpr uintptr_t RVA_FISHING_GAME_ROOT_SLOT  = 0x10D4950;
+// v1.20: vtable RVA 通过 RTTI 链定位（.?AVCState_Player_FishingRod@@），槽位镜像 64/64 字节验证
+static volatile uintptr_t RVA_FISHING_VTABLE          = 0xE387F8; // v1.5.3: v1.20 RTTI 定位
+static volatile uintptr_t RVA_FISHING_GAME_ROOT_SLOT  = 0x10FCBB0;
 
-// v1.09: save_data vtable RVA 仍为估算值（ReadGameHour 未被触发，无运行时数据）
+// v1.20: save_data vtable = CSaveData vtable 已知映射（0xE0B3D8 -> 0xE2D838）
 //         保留 warn-only 模式，不影响钓鱼功能（仅时钟读取用）
-static constexpr uintptr_t RVA_FISHING_SAVE_DATA_VTABLE = 0xE063C0; // TODO: 仍为估算值，非钓鱼路径
+static volatile uintptr_t RVA_FISHING_SAVE_DATA_VTABLE = 0xE2D838; // v1.5.3: v1.20 已知映射，非钓鱼路径
 
-static constexpr uintptr_t RVA_FISHING_MONITOR_TARGET  = 0x20CE70;
+static volatile uintptr_t RVA_FISHING_MONITOR_TARGET  = 0x218430;
+// ---- InstallFishingLoopHook 内部验证用 RVA（移至文件作用域以支持 HotConfig 注册）----
+static volatile uintptr_t RVA_SUCCESS_EXIT_JUMP   = 0x219E50;
+static volatile uintptr_t RVA_DIRECT_NULL_EXIT    = 0x219E01;
+static volatile uintptr_t RVA_STATE_DISPATCH       = 0x218480;
+static volatile uintptr_t RVA_SUCCESS_PHASE        = 0x219154;
 
 // ---- 垃圾排除 ----
-// Hook 点在钓鱼 update 函数内部（update RVA + 0x2CA5）
+// Hook 点在钓鱼 update 函数内部（update RVA + 0x2C95，v1.20）
 // 5 字节 anchor: test r15d, r15d; jle +0x4C
-static constexpr uintptr_t RVA_NO_TRASH_HOOK = 0x20FB15;
-static constexpr uintptr_t RVA_NO_TRASH_CONTINUE = 0x20FB1A;   // hook + 5（非垃圾路径跳回点）
-static constexpr uintptr_t RVA_NO_TRASH_SKIP_TARGET = 0x20FB66; // hook + 5 + 0x4C（垃圾路径跳过点）
+static volatile uintptr_t RVA_NO_TRASH_HOOK = 0x21B0C5;
+static volatile uintptr_t RVA_NO_TRASH_CONTINUE = 0x21B0CA;   // hook + 5（非垃圾路径跳回点）
+static volatile uintptr_t RVA_NO_TRASH_SKIP_TARGET = 0x21B116; // hook + 5 + 0x4C（垃圾路径跳过点）
 static const unsigned char NO_TRASH_ANCHOR[5] = {
     0x45, 0x85, 0xFF, 0x7E, 0x4C  // test r15d, r15d; jle +0x4C
 };
@@ -131,16 +140,16 @@ static constexpr u32 JUNK_ITEM_IDS[4] = {
 static constexpr size_t NO_TRASH_STUB_SIZE = 0xC0;  // stub 大小 192 字节
 
 // ---- 钓鱼状态机偏移 ----
-static constexpr uintptr_t FISHING_CURRENT_PHASE_OFFSET  = 0x1D8;
-static constexpr uintptr_t FISHING_REQUESTED_PHASE_OFFSET = 0x1DC;
-static constexpr uintptr_t FISHING_VALID_SPOT_OFFSET      = 0x270;
-static constexpr uintptr_t FISHING_TASK_OFFSET            = 0x290;
-static constexpr uintptr_t FISHING_SPECIAL_RESULT_OFFSET = 0x2B8;
-static constexpr uintptr_t FISHING_WAIT_TICKS_OFFSET      = 0x2F8;
+static volatile uintptr_t FISHING_CURRENT_PHASE_OFFSET  = 0x1D8;
+static volatile uintptr_t FISHING_REQUESTED_PHASE_OFFSET = 0x1DC;
+static volatile uintptr_t FISHING_VALID_SPOT_OFFSET      = 0x270;
+static volatile uintptr_t FISHING_TASK_OFFSET            = 0x290;
+static volatile uintptr_t FISHING_SPECIAL_RESULT_OFFSET = 0x2B8;
+static volatile uintptr_t FISHING_WAIT_TICKS_OFFSET      = 0x2F8;
 
 // ---- 游戏时钟读取（源自 BigL233 AutoPetReadClock + GetGameHour） ----
-static constexpr uintptr_t SAVE_DATA_OFFSET          = 0x208;   // game_root -> save data
-static constexpr uintptr_t SAVE_RAW_SECOND_OFFSET     = 0x3270;  // save -> raw second
+static volatile uintptr_t SAVE_DATA_OFFSET          = 0x208;   // game_root -> save data
+static volatile uintptr_t SAVE_RAW_SECOND_OFFSET     = 0x3270;  // save -> raw second
 static constexpr u64 RAW_SECONDS_PER_DAY   = 86400;
 static constexpr u64 RAW_SECONDS_PER_HOUR  = 3600;
 static constexpr u32 RAW_DAY_START_HOUR    = 7;                 // 游戏一天从早上 7 点开始
@@ -204,14 +213,7 @@ static constexpr ULONGLONG    MONITOR_NOTFISHING_TIMEOUT = 2000; // >2s = 已停
 // 内存工具
 // ============================================================
 static bool WriteMem(void* target, const void* data, size_t size) {
-    if (!target || !data || size == 0) return false;
-    DWORD old = 0;
-    if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &old)) return false;
-    memcpy(target, data, size);
-    const bool readback = memcmp(target, data, size) == 0;
-    VirtualProtect(target, size, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), target, size);
-    return readback;
+    return qol::WritePatchChecked(target, data, size);
 }
 
 static bool IsReadable(const void* pointer, size_t size) {
@@ -236,7 +238,7 @@ static bool ReadFishingState(void* state, uintptr_t* object, uintptr_t* vtable,
         return false;
     *object = reinterpret_cast<uintptr_t>(state);
     *vtable = *reinterpret_cast<const uintptr_t*>(*object);
-    // vtable 硬校验（v1.4.0 恢复）：RVA 已通过运行时日志确认 0xE164D0。
+    // vtable 硬校验（v1.4.0 恢复）：RVA v1.20 通过 RTTI 链定位确认 0xE387F8。
     // 不匹配则拒绝对象，防止 hook 被错误状态对象触发导致向随机内存写零。
     if (G::base && *vtable >= G::base) {
         const uintptr_t vtableRva = *vtable - G::base;
@@ -257,7 +259,7 @@ static bool ReadFishingState(void* state, uintptr_t* object, uintptr_t* vtable,
 // ============================================================
 // 游戏时钟读取
 // 读取 CSaveData 的 raw second，转换为游戏小时（0-23）
-// 路径：game_root(+0x10D4950) → +0x208 → save_data → +0x3270 → raw_second
+// 路径：game_root(+0x10FCBB0) → +0x208 → save_data → +0x3270 → raw_second
 // 换算：hour = (rawSecond % 86400) / 3600 + 7) % 24
 // ============================================================
 static bool ReadGameHour(u32* outHour) {
@@ -488,7 +490,7 @@ static bool InstallFishingLoopHook() {
         0x49, 0x8B, 0x8E, 0x90, 0x02, 0x00, 0x00
     };
     static const unsigned char expectedCommonExit[7] = {
-        0x48, 0x8B, 0x05, 0xAF, 0x5F, 0xEC, 0x00
+        0x48, 0x8B, 0x05, 0x63, 0x2C, 0xEE, 0x00
     };
     static const unsigned char expectedCancelPhase[11] = {
         0x41, 0xC7, 0x86, 0xDC, 0x01, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00
@@ -508,11 +510,7 @@ static bool InstallFishingLoopHook() {
         0xE9, 0xF1, 0x00, 0x00, 0x00
     };
 
-    // 新 RVA 对应的地址
-    static constexpr uintptr_t RVA_SUCCESS_EXIT_JUMP   = 0x20E8A4;
-    static constexpr uintptr_t RVA_DIRECT_NULL_EXIT    = 0x20E855;
-    static constexpr uintptr_t RVA_STATE_DISPATCH       = 0x20CEC0;
-    static constexpr uintptr_t RVA_SUCCESS_PHASE        = 0x20DBA8;
+    // 新 RVA 对应的地址（已移至文件作用域）
 
     const bool successGateOk = memcmp(successGate, expectedSuccessGate,
                                       sizeof(expectedSuccessGate)) == 0;
@@ -745,7 +743,7 @@ static bool InstallFishingPostCatchHook() {
         base + RVA_FISHING_PHASE4_FINISH);
 
     static const unsigned char expected[8] = {
-        0x49, 0x8B, 0xCE, 0xE8, 0x4F, 0x81, 0xFF, 0xFF
+        0x49, 0x8B, 0xCE, 0xE8, 0x63, 0x81, 0xFF, 0xFF
     };
     if (memcmp(target, expected, sizeof(expected)) != 0) {
         Log("[AutoFish] stage=post-catch-hook signature FAILED\n");
@@ -802,7 +800,7 @@ static bool InstallFishingPostCatchHook() {
 
     g_fishingPostCatchStub = stub;
     g_fishingPostCatchReady = true;
-    Log("[AutoFish] stage=post-catch-hook installed rva=0x20E6C9 stub=%p\n", stub);
+    Log("[AutoFish] stage=post-catch-hook installed rva=0x219C75 stub=%p\n", stub);
     return true;
 }
 
@@ -912,7 +910,7 @@ static bool InstallFishingMonitorHook() {
     }
 
     g_fishingMonitorReady = true;
-    Log("[AutoFish] stage=monitor installed update_rva=0x20CE70\n");
+    Log("[AutoFish] stage=monitor installed update_rva=0x218430\n");
     return true;
 }
 
@@ -1344,6 +1342,8 @@ static bool InitHud() {
         Log("[AutoFish] [HUD] CreateWindowExW failed (err=%lu)", GetLastError());
         return false;
     }
+    // v1.5.11: 移除游戏窗口 owner 绑定（GWLP_HWNDPARENT）——owned TOPMOST 窗口链
+    // 干扰 Alt+Tab 前台切换，游戏窗口切不回（切窗修复第四轮，详见 game_window.h v1.5）
 
     SetLayeredWindowAttributes(g_hudWindow, 0, 228, LWA_ALPHA);
     HRGN rounded = CreateRoundRectRgn(0, 0, width + 1, height + 1, 12, 12);
@@ -1357,7 +1357,7 @@ static void UpdateHudPosition() {
     if (!g_hudWindow) return;
     MONITORINFO mi = {};
     mi.cbSize = sizeof(mi);
-    HMONITOR mon = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
+    HMONITOR mon = MonitorFromWindow(QolFindGameWindow(), MONITOR_DEFAULTTOPRIMARY);
     if (!GetMonitorInfoW(mon, &mi)) {
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
     }
@@ -1384,79 +1384,76 @@ static void RefreshHud(bool enabled, bool noTrashEnabled = false,
 
 static void PumpHud() {
     if (!g_hudWindow) return;
+    if (!QolGameInForeground()) { QolHudGuardVisibility(g_hudWindow); return; }  // v1.6: 失焦守卫兜底（alpha 渐隐）后 pump 静默
     MSG msg = {};
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+    while (PeekMessageW(&msg, g_hudWindow, 0, 0, PM_REMOVE)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
     if (IsWindowVisible(g_hudWindow) && g_hudHideAt != 0 &&
         GetTickCount64() >= g_hudHideAt) {
+        QolHudMarkHiddenByMod(g_hudWindow);  // MOD 主动隐藏：清守卫标记
         ShowWindow(g_hudWindow, SW_HIDE);
         g_hudHideAt = 0;
     }
 }
 
 // ============================================================
-// 输入：键盘 9 切换自动钓鱼，F10 切换垃圾排除
+// 开关切换（v1.5.0：供 QoL 快捷菜单调用，原独立热键已移除）
 // ============================================================
-static void PollToggleSwitch() {
-    // --- 键盘 9：切换自动钓鱼 ---
-    static bool s_needsRelease9 = true;
-    {
-        bool down = (GetAsyncKeyState('9') & 0x8000) != 0;
-        bool pressed = false;
-        if (s_needsRelease9) {
-            if (!down) s_needsRelease9 = false;
-        } else if (down) {
-            pressed = true;
-            s_needsRelease9 = true;
+static void ToggleAutoFish() {
+    bool currentAuto = g_autoDetectMode.load(std::memory_order_relaxed);
+    if (currentAuto) {
+        // 关闭自动检测 + 禁用钓鱼
+        g_autoDetectMode.store(false, std::memory_order_relaxed);
+        if (g_fishingEnabled.load(std::memory_order_relaxed)) {
+            SetFishing(false);
         }
-        if (pressed) {
-            bool currentAuto = g_autoDetectMode.load(std::memory_order_relaxed);
-            if (currentAuto) {
-                // 关闭自动检测 + 禁用钓鱼
-                g_autoDetectMode.store(false, std::memory_order_relaxed);
-                if (g_fishingEnabled.load(std::memory_order_relaxed)) {
-                    SetFishing(false);
-                }
-                Log("[AutoFish] 切换: 自动检测 关闭，自动钓鱼已禁用");
-                RefreshHud(false, g_noTrashEnabled.load(std::memory_order_relaxed), false);
-            } else {
-                // 开启自动检测
-                g_autoDetectMode.store(true, std::memory_order_relaxed);
-                g_fishingInitFailed = false;  // 重置失败标志，允许重试
-                Log("[AutoFish] 切换: 自动检测 开启");
-                RefreshHud(g_fishingEnabled.load(std::memory_order_relaxed),
-                           g_noTrashEnabled.load(std::memory_order_relaxed), true);
-            }
-        }
+        Log("[AutoFish] 切换: 自动检测 关闭，自动钓鱼已禁用");
+        RefreshHud(false, g_noTrashEnabled.load(std::memory_order_relaxed), false);
+    } else {
+        // 开启自动检测
+        g_autoDetectMode.store(true, std::memory_order_relaxed);
+        g_fishingInitFailed = false;  // 重置失败标志，允许重试
+        Log("[AutoFish] 切换: 自动检测 开启");
+        RefreshHud(g_fishingEnabled.load(std::memory_order_relaxed),
+                   g_noTrashEnabled.load(std::memory_order_relaxed), true);
     }
+}
 
-    // --- F10：切换垃圾排除 ---
-    static bool s_needsReleaseF10 = true;
-    {
-        bool down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
-        bool pressed = false;
-        if (s_needsReleaseF10) {
-            if (!down) s_needsReleaseF10 = false;
-        } else if (down) {
-            pressed = true;
-            s_needsReleaseF10 = true;
-        }
-        if (pressed) {
-            bool current = g_noTrashEnabled.load(std::memory_order_relaxed);
-            bool next = !current;
-            if (SetNoTrash(next)) {
-                Log("[AutoFish] 垃圾排除: %s -> %s (exec=%u skip=%u)",
-                    current ? "开启" : "关闭",
-                    next ? "开启" : "关闭",
-                    g_noTrashExecCount.load(std::memory_order_relaxed),
-                    g_noTrashSkipCount.load(std::memory_order_relaxed));
-                RefreshHud(g_fishingEnabled.load(std::memory_order_relaxed), next,
-                           g_autoDetectMode.load(std::memory_order_relaxed));
-            }
-        }
+static void ToggleNoTrash() {
+    bool current = g_noTrashEnabled.load(std::memory_order_relaxed);
+    bool next = !current;
+    if (SetNoTrash(next)) {
+        Log("[AutoFish] 垃圾排除: %s -> %s (exec=%u skip=%u)",
+            current ? "开启" : "关闭",
+            next ? "开启" : "关闭",
+            g_noTrashExecCount.load(std::memory_order_relaxed),
+            g_noTrashSkipCount.load(std::memory_order_relaxed));
+        RefreshHud(g_fishingEnabled.load(std::memory_order_relaxed), next,
+                   g_autoDetectMode.load(std::memory_order_relaxed));
     }
+}
+
+static bool IsAutoFishOn() {
+    return g_autoDetectMode.load(std::memory_order_relaxed);
+}
+
+static bool IsNoTrashOn() {
+    return g_noTrashEnabled.load(std::memory_order_relaxed);
+}
+
+// ============================================================
+// QoL 快捷菜单导出（宿主：ModManager F1）
+// ============================================================
+extern "C" __declspec(dllexport) int QolQuickMenuItems(
+        QolQuickMenuItem* items, int maxItems) {
+    int n = 2;  // 自动钓鱼 + 垃圾排除
+    if (items && maxItems >= 1)
+        items[0] = { "自动钓鱼", IsAutoFishOn, ToggleAutoFish };
+    if (items && maxItems >= 2)
+        items[1] = { "垃圾排除", IsNoTrashOn, ToggleNoTrash };
+    return n;
 }
 
 // ============================================================
@@ -1517,7 +1514,7 @@ static void RestoreAllHooks() {
     if (g_fishingLoopReady) {
         // common_exit: 7 字节原始字节
         static const unsigned char loopCommonExit[7] = {
-            0x48, 0x8B, 0x05, 0xAF, 0x5F, 0xEC, 0x00
+            0x48, 0x8B, 0x05, 0x63, 0x2C, 0xEE, 0x00
         };
         WriteMem(reinterpret_cast<void*>(base + RVA_FISHING_COMMON_EXIT),
                  loopCommonExit, sizeof(loopCommonExit));
@@ -1542,7 +1539,7 @@ static void RestoreAllHooks() {
         unsigned char* target = reinterpret_cast<unsigned char*>(
             base + RVA_FISHING_PHASE4_FINISH);
         static const unsigned char postCatchOriginal[8] = {
-            0x49, 0x8B, 0xCE, 0xE8, 0x4F, 0x81, 0xFF, 0xFF
+            0x49, 0x8B, 0xCE, 0xE8, 0x63, 0x81, 0xFF, 0xFF
         };
         WriteMem(target, postCatchOriginal, sizeof(postCatchOriginal));
         g_fishingPostCatchReady = false;
@@ -1571,9 +1568,40 @@ static void RestoreAllHooks() {
 }
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("autofish");
-    if (!SelfVerifyInit("autofish")) return;
-    Log("[AutoFish] mod_init 开始 (v1.4.0)");
-    QolRegisterHotKey("autofish", "9, F10");
+    Log("[AutoFish] mod_init 开始 (v1.5.5-diag v1.20)");
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_COMMON_EXIT, "RVA_FISHING_COMMON_EXIT", HOT_RVA, 0x219F46);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_COMMON_EXIT_CONTINUE, "RVA_FISHING_COMMON_EXIT_CONTINUE", HOT_RVA, 0x219F4D);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_UPDATE_EPILOGUE, "RVA_FISHING_UPDATE_EPILOGUE", HOT_RVA, 0x219FC1);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_SUCCESS_COMPLETION_GATE, "RVA_FISHING_SUCCESS_COMPLETION_GATE", HOT_RVA, 0x219DF7);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_SUCCESS_GATE_CONTINUE, "RVA_FISHING_SUCCESS_GATE_CONTINUE", HOT_RVA, 0x219DFE);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_CANCEL_REQUEST, "RVA_FISHING_CANCEL_REQUEST", HOT_RVA, 0x218963);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_CANCEL_REQUEST_CONTINUE, "RVA_FISHING_CANCEL_REQUEST_CONTINUE", HOT_RVA, 0x21896E);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_PHASE4_FINISH, "RVA_FISHING_PHASE4_FINISH", HOT_RVA, 0x219C75);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_PHASE4_CLEANUP, "RVA_FISHING_PHASE4_CLEANUP", HOT_RVA, 0x219C7E);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_PHASE4_NATIVE_CONTINUE, "RVA_FISHING_PHASE4_NATIVE_CONTINUE", HOT_RVA, 0x219C7D);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_NATIVE_ACTION_FINISH, "RVA_FISHING_NATIVE_ACTION_FINISH", HOT_RVA, 0x211DE0);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_VTABLE, "RVA_FISHING_VTABLE", HOT_RVA, 0xE387F8);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_GAME_ROOT_SLOT, "RVA_FISHING_GAME_ROOT_SLOT", HOT_RVA, 0x10FCBB0);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_SAVE_DATA_VTABLE, "RVA_FISHING_SAVE_DATA_VTABLE", HOT_RVA, 0xE2D838);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_MONITOR_TARGET, "RVA_FISHING_MONITOR_TARGET", HOT_RVA, 0x218430);
+    HotConfig_Register("autofish", (void*)&RVA_NO_TRASH_HOOK, "RVA_NO_TRASH_HOOK", HOT_RVA, 0x21B0C5);
+    HotConfig_Register("autofish", (void*)&RVA_NO_TRASH_CONTINUE, "RVA_NO_TRASH_CONTINUE", HOT_RVA, 0x21B0CA);
+    HotConfig_Register("autofish", (void*)&RVA_NO_TRASH_SKIP_TARGET, "RVA_NO_TRASH_SKIP_TARGET", HOT_RVA, 0x21B116);
+    HotConfig_Register("autofish", (void*)&FISHING_CURRENT_PHASE_OFFSET, "FISHING_CURRENT_PHASE_OFFSET", HOT_RVA, 0x1D8);
+    HotConfig_Register("autofish", (void*)&FISHING_REQUESTED_PHASE_OFFSET, "FISHING_REQUESTED_PHASE_OFFSET", HOT_RVA, 0x1DC);
+    HotConfig_Register("autofish", (void*)&FISHING_VALID_SPOT_OFFSET, "FISHING_VALID_SPOT_OFFSET", HOT_RVA, 0x270);
+    HotConfig_Register("autofish", (void*)&FISHING_TASK_OFFSET, "FISHING_TASK_OFFSET", HOT_RVA, 0x290);
+    HotConfig_Register("autofish", (void*)&FISHING_SPECIAL_RESULT_OFFSET, "FISHING_SPECIAL_RESULT_OFFSET", HOT_RVA, 0x2B8);
+    HotConfig_Register("autofish", (void*)&FISHING_WAIT_TICKS_OFFSET, "FISHING_WAIT_TICKS_OFFSET", HOT_RVA, 0x2F8);
+    HotConfig_Register("autofish", (void*)&SAVE_DATA_OFFSET, "SAVE_DATA_OFFSET", HOT_RVA, 0x208);
+    HotConfig_Register("autofish", (void*)&SAVE_RAW_SECOND_OFFSET, "SAVE_RAW_SECOND_OFFSET", HOT_RVA, 0x3270);
+    HotConfig_Register("autofish", (void*)&RVA_SUCCESS_EXIT_JUMP, "RVA_SUCCESS_EXIT_JUMP", HOT_RVA, 0x219E50);
+    HotConfig_Register("autofish", (void*)&RVA_DIRECT_NULL_EXIT, "RVA_DIRECT_NULL_EXIT", HOT_RVA, 0x219E01);
+    HotConfig_Register("autofish", (void*)&RVA_STATE_DISPATCH, "RVA_STATE_DISPATCH", HOT_RVA, 0x218480);
+    HotConfig_Register("autofish", (void*)&RVA_SUCCESS_PHASE, "RVA_SUCCESS_PHASE", HOT_RVA, 0x219154);
+    HotConfig_Poll();
+    HotConfig_DumpCE("autofish");
+    // v1.5.0: 热键 9/F10 移除，开关改由 QoL 快捷菜单（F1）驱动
 
     G::base = (uintptr_t)GetModuleHandleW(nullptr);
     Log("[AutoFish] 游戏基址: 0x%llX", (unsigned long long)G::base);
@@ -1588,10 +1616,10 @@ extern "C" __declspec(dllexport) void mod_init(void) {
 
     // v1.3.0: 自动检测模式默认开启
     // 钓鱼时自动开启 NOP 补丁，停止钓鱼时自动关闭，过剧情无需手动操作
-    Log("[AutoFish] 自动检测模式默认开启，按 9 关闭");
+    Log("[AutoFish] 自动检测模式默认开启（F1 快捷菜单可切换）");
 
-    // 垃圾排除默认关闭，按 F10 开启
-    Log("[AutoFish] 垃圾排除默认关闭，按 F10 开启");
+    // 垃圾排除默认关闭
+    Log("[AutoFish] 垃圾排除默认关闭（F1 快捷菜单可切换）");
 
     G::ready = true;
     Log("[AutoFish] mod_init 完成 (ready=%d auto_detect=%d monitor=%d fishing=%d no_trash=%d)",
@@ -1603,10 +1631,19 @@ extern "C" __declspec(dllexport) void mod_init(void) {
 }
 
 extern "C" __declspec(dllexport) void mod_tick(void) {
+    qol::budget::BeginFrame();  // P0: 帧锚定（幂等，多 DLL 安全）
+    static int s_bdgSlot = -1;  // P0 探针（惰性注册，析构自动上报）
+    if (s_bdgSlot < 0) s_bdgSlot = qol::budget::Slot("AutoFish");
+    struct BdgGuard {
+        int slot; uint64_t t0;
+        ~BdgGuard() { qol::budget::Report(slot, qol::budget::NowUs() - t0); }
+    } bdgGuard = { s_bdgSlot, qol::budget::NowUs() };
+
     if (!G::ready) return;
-    PollToggleSwitch();
-    PollAutoDetect();
+    HotConfig_Poll();
+    if (!QolGameBusy()) PollAutoDetect();  // P1-2: 载入/菜单期间静默
     PumpHud();
+    QolHudGuardVisibility(g_hudWindow);  // v1.5.6: 失焦隐藏 HUD（不飘桌面）
 }
 
 extern "C" __declspec(dllexport) void unload(void) {

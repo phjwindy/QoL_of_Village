@@ -1,16 +1,44 @@
-// sower.cpp —— 范围播种 (1x1 / 3x3 / 5x5 / 连通) (v1.3.1)
+// sower.cpp —— 范围播种 (1x1 / 3x3 / 5x5) (v1.3.41：连通档下线（用户拍板）——v1.20 连通 Flood-Fill 实测 filled=0 不工作；v1.3.36：每帧最多结算 1 格限速防播种风暴；v1.3.35-diag 计时确认额外格 28us/格)
 //
+// v1.3.10: detour 入口限频诊断日志（区分调用链断裂 vs 结构漂移）——
+//   实测 v1.20：detour 被调用（调用链完好），但 next=0xFFFFFFFF、count=0
+//   → 结构偏移漂移实锤（NEXT_PHASE_OFFSET 0x1DC 在 v1.20 已失效）。
+// v1.3.11: detour 内 dump state 窗口 0x1C0-0x2BF（8 行×8 值），
+// v1.3.12: next_phase(0x1DC) 在 v1.20 始终 FFFFFFFF→回退用 count 增加判断中心结算。
+// v1.3.13: 修正 v1.3.12 逻辑反转 bug（else 分支忘了取反"未结算"条件）。
+// v1.3.14: SowingCaptureCenterItem 全路径诊断日志（定位 centerItem invalid 原因）。
+// v1.3.15: save data 偏移漂移回退模式——当 save data 验证失败时，仅用 sowing state
+//          结构（state+0x268 land 指针 + SowingInspectLand），跳过所有 save data
+//          依赖的验证。影响 4 个函数：SowingCaptureCenterItem / SettleNativeExtras /
+//          SettleTileCore / SettleNativeExtrasImpl。
+//   对照 phase 推进序列定位 v1.20 新偏移（定位后热参数直接修复，免编译）。
+//
+// v1.3.25-diag: mapInfo 偏移热参数化（MANAGER_MAPINFO_OFFSET 默认 0x310）+
+//          manager/mapInfo 诊断 dump（validateLand 失败时打印 mapInfo+[mI+0x30]+
+//          manager+0x300~0x340 窗口），定位 v1.20 manager 结构 0x310 偏移是否漂移。
+//          根因分析：AOB 确认 RVA_SOW_VALIDATE_LAND=0x1E1310 正确（全 exe 唯一命中），
+//          函数体从 [mapInfo+0x30]→[+0x560] 解引用；若 0x310 漂移→mapInfo 无效→SEH→false。
+// v1.3.16: H10——7 个原生函数调用加 SEH 保护（stateManagerLookup / sowValidateLand /
+//          sowValidateState / sowSeedItemLookup / sowSeedItemCheck / sowWorldToKey /
+//          sowKeyToWorld），异常时返回失败默认值（nullptr / false / 0）。
+//          M4——连通模式预算耗尽 break 前 --idx 回退到未结算格，避免跳过一格。
+//
+// v1.3.8: v1.20 (build 25311578) 适配——13 个 RVA 全部重定位；4 个 expected 数组从新 exe 实读重生成（STATE_LOOKUP/REFRESH_LAND/SEED_ITEM_LOOKUP 的 rel32 变化 + VALIDATE_STATE 序言重写：r12→r13、栈帧 0xA0→0x90）。22B hook 序言与结构偏移（[state+0x268] 等）经多路交叉验证不变。
+// v1.3.5: 连通模式四邻域坐标系修复——旧代码直接用世界轴 ±45 偏移，
+//         在 45 度菱形网格上落在格子中缝（非格子中心），Flood-Fill
+//         永远只收集到中心一格，连通模式对普通田地/田垄全失效。
+//         修复：四邻域改屏幕格子偏移 + 基向量变换（与 3x3/5x5 同坐标系）。
 // v1.3.1: 续播队列 state 指针添加 IsReadable 防悬空检查。
 //
-// 切换键：键盘 5 或 手柄 D-pad Left  循环 1x1(原生) -> 3x3 -> 5x5 -> 连通 -> 1x1
+// 切换键：键盘 5 或 手柄 D-pad Left  循环 1x1(原生) -> 3x3 -> 5x5 -> 1x1（v1.3.41 连通档下线）
 // 原则：只使用背包中当前选中的种子，播完即停。
 //
-// 核心策略（源自 BigL233 dinput8.cpp 3272-5944 行，适配 v1.09 build 25094764）：
-//   Hook 播种状态机 Phase 1 更新函数 (RVA 0x23E4E0, 22 字节序言)。
+// 核心策略（源自 BigL233 dinput8.cpp 3272-5944 行，适配 v1.20 build 25311578）：
+//   Hook 播种状态机 Phase 1 更新函数 (RVA 0x24ACE0, 22 字节序言)。
 //   中心格子由原生结算，额外格子同步批量结算。
 //   播种状态机两阶段：
-//     Phase 0 (RVA 0x23E4A0): 刷新 [state+0x268] 选中种子 + 预验证
-//     Phase 1 (RVA 0x23E4E0): 重新选目标 -> command 0x3FE -> 验证 -> 0x23EBC0 结算
+//     Phase 0 (RVA 0x24ACA0): 刷新 [state+0x268] 选中种子 + 预验证
+//     Phase 1 (RVA 0x24ACE0): 重新选目标 -> command 0x3FE -> 验证 -> 0x24B460 结算
 //   中心结算成功后 (count+1)，枚举周围格子做同步批量结算。
 //
 // 安全措施：
@@ -36,11 +64,17 @@
 #pragma comment(lib, "hid.lib")
 
 #include "logging.h"
+#include "budget.h"        // v1.3.19: P0 帧预算/耗时探针（跨 DLL 共享）
+
+static int s_sowerBudgetSlot = -1;  // v1.3.19: P0 探针槽位
+#include "hot_config.h"
 #include "hotkey.h"
-#include "selfverify.h"
+#include "game_window.h"   // HUD owner 绑定游戏窗口
+#include "patch_safety.h"
 
 // 日志开关：发布版禁用日志输出（不生成 qol_sower.log）
 // 调试时取消注释下行即可开启日志，无需改其他代码
+// v1.3.41 转正：日志关闭（qol_sower.log 不再生成）
 // #define SOWER_LOGGING
 #ifdef SOWER_LOGGING
 #else
@@ -50,51 +84,57 @@
   #define LogClose()  ((void)0)
 #endif
 
+// [diag] 诊断日志门控（默认关）；调试时 #define DIAG_SOWER 1 开启
+#ifndef DIAG_SOWER
+#define DIAG_SOWER 0      // v1.3.41 转正：诊断日志关闭（定位时改 1 重编）
+#endif
+
 // ============================================================
-// 常量（build 25094764 / v1.09）
+// 常量（build 25311578 / v1.20）
 // ============================================================
 
 // ---- RVA 地址 ----
-static constexpr uintptr_t RVA_SOWING_UPDATE             = 0x23E4E0;
-static constexpr uintptr_t RVA_SOWING_PHASE0_UPDATE      = 0x23E4A0;
-static constexpr uintptr_t RVA_STATE_MANAGER_LOOKUP      = 0x1BF940;
-static constexpr uintptr_t RVA_SOW_SELECT_TARGET         = 0x206A60;
-static constexpr uintptr_t RVA_SOW_VALIDATE_LAND         = 0x1D5EE0;
-static constexpr uintptr_t RVA_SOW_REFRESH_LAND          = 0x206B50;
-static constexpr uintptr_t RVA_SOW_VALIDATE_STATE        = 0x23E8B0;
-static constexpr uintptr_t RVA_SOW_SETTLE                = 0x23EBC0;
-static constexpr uintptr_t RVA_SOW_SEED_ITEM_LOOKUP      = 0x172410;
-static constexpr uintptr_t RVA_SOW_SEED_ITEM_CHECK       = 0x73E280;
-static constexpr uintptr_t RVA_GAME_SINGLETON_PTR        = 0x10D4950;
-static constexpr uintptr_t RVA_SOW_WORLD_TO_KEY          = 0x163160;
-static constexpr uintptr_t RVA_SOW_KEY_TO_WORLD          = 0x163240;
+static volatile uintptr_t RVA_SOWING_UPDATE             = 0x24ACE0;
+static volatile uintptr_t RVA_SOWING_PHASE0_UPDATE      = 0x24ACA0;
+static volatile uintptr_t RVA_STATE_MANAGER_LOOKUP      = 0x1CA5D0;
+static volatile uintptr_t RVA_SOW_SELECT_TARGET         = 0x212020;
+static volatile uintptr_t RVA_SOW_VALIDATE_LAND         = 0x1E1310;
+static volatile uintptr_t RVA_SOW_REFRESH_LAND          = 0x212110;
+static volatile uintptr_t RVA_SOW_VALIDATE_STATE        = 0x24B0B0;
+static volatile uintptr_t RVA_SOW_SETTLE                = 0x24B460;
+static volatile uintptr_t RVA_SOW_SEED_ITEM_LOOKUP      = 0x17C840;
+static volatile uintptr_t RVA_SOW_SEED_ITEM_CHECK       = 0x75F630;
+static volatile uintptr_t RVA_GAME_SINGLETON_PTR        = 0x10FCBB0;
+static volatile uintptr_t RVA_SOW_WORLD_TO_KEY          = 0x16D460;
+static volatile uintptr_t RVA_SOW_KEY_TO_WORLD          = 0x16D540;
 
 // ---- 结构体偏移 ----
-static constexpr uintptr_t SAVE_DATA_POINTER_OFFSET           = 0x208;
-static constexpr uintptr_t SAVE_INVENTORY_UNLOCK_FLAGS_OFFSET = 0x388;
-static constexpr uintptr_t SAVE_SKIP_ITEM_DEDUCTION_OFFSET    = 0x340C;
-static constexpr uintptr_t SAVE_INVENTORY_SLOTS_OFFSET        = 0x32C0;
-static constexpr uintptr_t SAVE_SELECTED_ITEM_INDEX_OFFSET    = 0x33B0;
+static volatile uintptr_t SAVE_DATA_POINTER_OFFSET           = 0x208;
+static volatile uintptr_t SAVE_INVENTORY_UNLOCK_FLAGS_OFFSET = 0x388;
+static volatile uintptr_t SAVE_SKIP_ITEM_DEDUCTION_OFFSET    = 0x340C;
+static volatile uintptr_t SAVE_INVENTORY_SLOTS_OFFSET        = 0x32C0;
+static volatile uintptr_t SAVE_SELECTED_ITEM_INDEX_OFFSET    = 0x33B0;
 static constexpr size_t    SAVE_INVENTORY_MAX_SLOTS           = 30;
 
 static constexpr uint64_t ACTION_SOW = 0x424;
 
-static constexpr uintptr_t SOWING_STATE_PHASE_OFFSET         = 0x1D8;
-static constexpr uintptr_t SOWING_STATE_NEXT_PHASE_OFFSET    = 0x1DC;
-static constexpr uintptr_t SOWING_STATE_TARGET_OFFSET        = 0x240;
-static constexpr uintptr_t SOWING_STATE_QUERY_OFFSET         = 0x248;
-static constexpr uintptr_t SOWING_STATE_LAND_OFFSET          = 0x268;
-static constexpr uintptr_t SOWING_STATE_SELECTED_KEY_OFFSET  = 0x270;
-static constexpr uintptr_t SOWING_STATE_COUNT_OFFSET         = 0x278;
-static constexpr uintptr_t SOWING_STATE_VALIDATED_OFFSET     = 0x27C;
-static constexpr uintptr_t SOWING_STATE_RUNNER_OFFSET        = 0x238;
+static volatile uintptr_t SOWING_STATE_PHASE_OFFSET         = 0x1D8;
+static volatile uintptr_t SOWING_STATE_NEXT_PHASE_OFFSET    = 0x1DC;
+static volatile uintptr_t SOWING_STATE_TARGET_OFFSET        = 0x240;
+static volatile uintptr_t SOWING_STATE_QUERY_OFFSET         = 0x248;
+static volatile uintptr_t SOWING_STATE_LAND_OFFSET          = 0x268;
+static volatile uintptr_t SOWING_STATE_SELECTED_KEY_OFFSET  = 0x270;
+static volatile uintptr_t SOWING_STATE_COUNT_OFFSET         = 0x278;
+static volatile uintptr_t SOWING_STATE_VALIDATED_OFFSET     = 0x27C;
+static volatile uintptr_t SOWING_STATE_RUNNER_OFFSET        = 0x238;
 
-static constexpr uintptr_t UNIT_POSITION_OFFSET         = 0x230;
-static constexpr uintptr_t SOWING_MANAGER_TARGET_OFFSET = 0x460;
+static volatile uintptr_t UNIT_POSITION_OFFSET         = 0x230;
+static volatile uintptr_t SOWING_MANAGER_TARGET_OFFSET = 0x460;
+static volatile uintptr_t MANAGER_MAPINFO_OFFSET       = 0x310;  // v1.3.24: manager→mapInfo 偏移（热参数化，v1.20 待验证）
 
 // ---- 种子物品内部偏移 ----
-static constexpr uintptr_t ITEM_DATA_HOLDER_OFFSET  = 0x240;
-static constexpr uintptr_t ITEM_STACK_COUNT_OFFSET  = 0x260;
+static volatile uintptr_t ITEM_DATA_HOLDER_OFFSET  = 0x240;
+static volatile uintptr_t ITEM_STACK_COUNT_OFFSET  = 0x260;
 
 // ---- 网格布局 ----
 static constexpr float SOW_TILE_STEP = 45.0f;
@@ -107,7 +147,7 @@ static constexpr size_t SOWING_HOOK_LENGTH = 22;
 // 连通播种可能一次收集上百格，若同一帧全部结算必然卡顿。
 // 方案：每帧最多用掉 SOWING_FRAME_BUDGET_US 微秒做结算，剩余格子存入
 //       续播队列，由 mod_tick 的续播泵逐帧完成（每次播种动作后最多约 6ms）。
-static constexpr uint64_t SOWING_FRAME_BUDGET_US = 6000;   // 6ms / 帧
+static constexpr uint64_t SOWING_FRAME_BUDGET_US = 2000;   // v1.3.4: 6000→2000（避免单帧 6ms 脉冲）
 static constexpr size_t  SOWING_RESUME_KEEP_TILES = 2;     // 剩余 >= 2 格才启用续播
 
 // ---- DualSense HID 常量 ----
@@ -157,6 +197,7 @@ struct SowingCenterItemSnapshot {
     void*          item = nullptr;
     SowingLandInfo info = {};
     bool           valid = false;
+    bool           saveDataOk = false;  // v1.3.15: save data 验证成功标志，false=偏移漂移回退模式
 };
 
 struct SowingPendingCenterItem {
@@ -189,7 +230,7 @@ namespace G {
     uintptr_t base = 0;
     bool ready = false;
 
-    std::atomic<int> rangeSowingMode{0};       // 0=1x1, 1=3x3, 2=5x5
+    std::atomic<int> rangeSowingMode{0};       // 0=1x1, 1=3x3, 2=5x5（v1.3.41 连通档 3 下线，Flood-Fill 代码保留不可达）
     bool rangeSowingReady = false;
     bool rangeSowingNativeBatchReady = false;
 
@@ -389,13 +430,16 @@ static void SowingWriteU8(void* base, uintptr_t offset, uint8_t value) {
 // 内存写入工具（用于 hook 安装）
 // ============================================================
 static bool WriteMem(void* target, const void* data, size_t size) {
-    DWORD old = 0;
-    if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &old)) return false;
-    memcpy(target, data, size);
-    VirtualProtect(target, size, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), target, size);
-    return true;
+    return qol::WritePatchChecked(target, data, size);
 }
+
+// v1.3.16: 原生函数 SEH 包装前向声明（定义在 L803+）
+__declspec(noinline) static uint64_t SafeSowWorldToKey(const SowingWorldPoint* point);
+__declspec(noinline) static SowingWorldPoint* SafeSowKeyToWorld(SowingWorldPoint* point, uint64_t key);
+__declspec(noinline) static void* SafeStateManagerLookup(void* owner);
+__declspec(noinline) static void* SafeSowSeedItemLookup(void* owner);
+__declspec(noinline) static bool SafeSowSeedItemCheck(void* item, unsigned char a, unsigned char b);
+__declspec(noinline) static bool SafeSowValidateLand(void* mapInfo, uint64_t key, void* field);
 
 // ============================================================
 // 播种几何：WorldToKey / KeyToWorld / OffsetKeyNative
@@ -407,7 +451,7 @@ static bool SowingWorldToKey(float x, float y, uint64_t* outKey) {
     if (!outKey || !G::sowWorldToKey || !std::isfinite(x) || !std::isfinite(y))
         return false;
     const SowingWorldPoint point = {x, y, 0.0f, 0.0f};
-    const uint64_t key = G::sowWorldToKey(&point);
+    const uint64_t key = SafeSowWorldToKey(&point);
     if (key == 0 || key == ~uint64_t{0}) return false;
     *outKey = key;
     return true;
@@ -417,7 +461,7 @@ static bool SowingKeyToWorld(uint64_t key, SowingWorldPoint* outPoint) {
     if (!outPoint || !G::sowKeyToWorld || key == 0 || key == ~uint64_t{0})
         return false;
     SowingWorldPoint point = {};
-    if (G::sowKeyToWorld(&point, key) != &point ||
+    if (SafeSowKeyToWorld(&point, key) != &point ||
         !std::isfinite(point.x) || !std::isfinite(point.y) ||
         point.z != 0.0f || point.w != 0.0f)
         return false;
@@ -462,13 +506,78 @@ static SowingLandInfo SowingInspectLand(void* land) {
     void* record = SowingReadPointer(land, ITEM_DATA_HOLDER_OFFSET);
     if (!record) return info;
     void* head = SowingReadPointer(record, 0);
-    if (!head || !SowingIsReadable(reinterpret_cast<unsigned char*>(head) + 0x210, sizeof(uint64_t)))
+    // v1.3.18: head 偏移漂移修复——dump 定位 ACTION_SOW 在 head+0x230（v1.09: 0x208）
+    // field 指针在 head+0x228（v1.09: 0x210）
+    if (!head || !SowingIsReadable(reinterpret_cast<unsigned char*>(head) + 0x228, sizeof(uint64_t) * 2))
         return info;
     info.head = head;
-    info.action = SowingReadU64(head, 0x208);
-    info.field = SowingReadPointer(head, 0x210);
+    info.action = SowingReadU64(head, 0x230);   // v1.20: 0x208→0x230 (+0x28)
+    info.field = SowingReadPointer(head, 0x238); // v1.20: 0x210→0x238 (+0x28，与 action 同步漂移；2026-10-03 反汇编实锤：原生 validateLand 调用点 field 经 [head+0x238] 解引用)
     info.readable = true;
     return info;
+}
+
+// ============================================================
+// v1.3.17: head 结构偏移漂移诊断
+// inspect fail 时 2s 限频 dump land→record→head 链 +
+// head+0x100~0x2FF 扫描 ACTION_SOW(0x424) + head+0x1E0~0x230 窗口 hex dump
+// 定位 v1.20 head 内部 action/field 偏移漂移
+// ============================================================
+static ULONGLONG g_sowingInspectFailDumpTime = 0;
+
+__declspec(noinline)
+static void SowingDumpLandChainOnInspectFail(void* land) {
+    ULONGLONG now = GetTickCount64();
+    if (now - g_sowingInspectFailDumpTime < 2000) return;
+    g_sowingInspectFailDumpTime = now;
+
+    void* record = land ? SowingReadPointer(land, ITEM_DATA_HOLDER_OFFSET) : nullptr;
+    void* head = record ? SowingReadPointer(record, 0) : nullptr;
+#if DIAG_SOWER
+    Log("[Sower] [diag] dump: land=%p record=%p(off 0x%llx) head=%p\n",
+        land, record,
+        (unsigned long long)(uintptr_t)ITEM_DATA_HOLDER_OFFSET,
+        head);
+#endif
+    if (!head) return;
+
+    // head+0x100~0x2FF 扫描 ACTION_SOW (0x424)
+    if (!SowingIsReadable(reinterpret_cast<unsigned char*>(head) + 0x100, 0x200)) {
+#if DIAG_SOWER
+        Log("[Sower] [diag] dump: head+0x100..0x2FF not readable\n");
+#endif
+        return;
+    }
+    int hits = 0;
+    for (uintptr_t off = 0x100; off + 8 <= 0x300; off += 4) {
+        uint64_t v = SowingReadU64(head, off);
+        if (v == ACTION_SOW) {
+#if DIAG_SOWER
+            Log("[Sower] [diag] dump: head+0x%llx = 0x424 (ACTION_SOW candidate)\n",
+                (unsigned long long)off);
+#endif
+            ++hits;
+        }
+    }
+    if (hits == 0) {
+#if DIAG_SOWER
+        Log("[Sower] [diag] dump: no 0x424 found in head+0x100~0x2FF\n");
+#endif
+    }
+
+    // 窗口 dump: head+0x1E0~0x230 (预期 action 在 0x208 附近)，每行 4 个 u64
+    for (uintptr_t off = 0x1E0; off < 0x230; off += 0x20) {
+        uint64_t v0 = SowingReadU64(head, off);
+        uint64_t v1 = SowingReadU64(head, off + 8);
+        uint64_t v2 = SowingReadU64(head, off + 0x10);
+        uint64_t v3 = SowingReadU64(head, off + 0x18);
+#if DIAG_SOWER
+        Log("[Sower] [diag] dump: head+0x%llx: %016llx %016llx %016llx %016llx\n",
+            (unsigned long long)off,
+            (unsigned long long)v0, (unsigned long long)v1,
+            (unsigned long long)v2, (unsigned long long)v3);
+#endif
+    }
 }
 
 static void* SowingGetSaveData() {
@@ -497,27 +606,60 @@ static bool SowingReadUnlockedInventoryCapacity(void* save, size_t* capacity) {
 static SowingCenterItemSnapshot SowingCaptureCenterItem(void* state) {
     SowingCenterItemSnapshot snapshot;
     if (!state) return snapshot;
+    // v1.3.15: 先从 sowing state 读 land 指针（不依赖 save data 偏移）
+    if (!SowingTryReadPointer(state, SOWING_STATE_LAND_OFFSET, &snapshot.item) ||
+        !snapshot.item) {
+#if DIAG_SOWER
+        Log("[Sower] [diag] capture: land ptr null (offset=0x%llx)\n",
+            (unsigned long long)SOWING_STATE_LAND_OFFSET);
+#endif
+        return snapshot;
+    }
+    // 尝试 save data 验证（如果偏移正确则增强可信度）
     snapshot.save = SowingGetSaveData();
-    if (!snapshot.save ||
-        !SowingReadUnlockedInventoryCapacity(snapshot.save, &snapshot.unlockedCapacity) ||
-        !SowingTryReadU32(snapshot.save, SAVE_SELECTED_ITEM_INDEX_OFFSET, &snapshot.selectedIndex) ||
-        snapshot.unlockedCapacity == 0 ||
-        snapshot.unlockedCapacity > SAVE_INVENTORY_MAX_SLOTS ||
-        snapshot.selectedIndex >= snapshot.unlockedCapacity ||
-        !SowingTryReadPointer(state, SOWING_STATE_LAND_OFFSET, &snapshot.item) ||
-        !snapshot.item)
-        return snapshot;
-    // 验证 [state+0x268] 与背包选中槽位物品一致
-    void* selectedSlotItem = nullptr;
-    if (!SowingTryReadPointer(snapshot.save,
-            SAVE_INVENTORY_SLOTS_OFFSET + (size_t)snapshot.selectedIndex * sizeof(void*),
-            &selectedSlotItem) ||
-        selectedSlotItem != snapshot.item)
-        return snapshot;
+    snapshot.saveDataOk = false;
+    if (snapshot.save &&
+        SowingReadUnlockedInventoryCapacity(snapshot.save, &snapshot.unlockedCapacity) &&
+        SowingTryReadU32(snapshot.save, SAVE_SELECTED_ITEM_INDEX_OFFSET, &snapshot.selectedIndex) &&
+        snapshot.unlockedCapacity > 0 &&
+        snapshot.unlockedCapacity <= SAVE_INVENTORY_MAX_SLOTS &&
+        snapshot.selectedIndex < snapshot.unlockedCapacity) {
+        void* selectedSlotItem = nullptr;
+        if (SowingTryReadPointer(snapshot.save,
+                SAVE_INVENTORY_SLOTS_OFFSET + (size_t)snapshot.selectedIndex * sizeof(void*),
+                &selectedSlotItem) &&
+            selectedSlotItem == snapshot.item) {
+            snapshot.saveDataOk = true;
+        } else {
+#if DIAG_SOWER
+            Log("[Sower] [diag] capture: save data item mismatch, fallback to state-only mode\n");
+#endif
+        }
+    } else if (snapshot.save) {
+#if DIAG_SOWER
+        Log("[Sower] [diag] capture: save data validation failed, fallback to state-only mode\n");
+#endif
+    } else {
+#if DIAG_SOWER
+        Log("[Sower] [diag] capture: save data null, fallback to state-only mode\n");
+#endif
+    }
+    // v1.3.15: 无论 save data 验证是否成功，只要 land info 有效就标记 valid
     snapshot.info = SowingInspectLand(snapshot.item);
     snapshot.valid = snapshot.info.readable &&
                      snapshot.info.action == ACTION_SOW &&
                      snapshot.info.field != nullptr;
+    if (!snapshot.valid) {
+#if DIAG_SOWER
+        Log("[Sower] [diag] capture: inspect fail readable=%d action=%u field=%p\n",
+            (int)snapshot.info.readable, snapshot.info.action, snapshot.info.field);
+        SowingDumpLandChainOnInspectFail(snapshot.item);  // v1.3.17: land 链 dump 诊断
+#endif
+    } else if (!snapshot.saveDataOk) {
+#if DIAG_SOWER
+        Log("[Sower] [diag] capture: valid via state-only (saveDataOk=0)\n");
+#endif
+    }
     return snapshot;
 }
 
@@ -527,18 +669,18 @@ static SowingCenterItemSnapshot SowingCaptureCenterItem(void* state) {
 static void* RangeSowingGetManager(void* state) {
     void* owner = SowingReadPointer(state, 8);
     if (!owner || !G::stateManagerLookup) return nullptr;
-    return G::stateManagerLookup(owner);
+    return SafeStateManagerLookup(owner);
 }
 
 static void* RangeSowingGetSeedItem(void* state) {
     if (!G::sowSeedItemLookup) return nullptr;
     void* owner = SowingReadPointer(state, 8);
     if (!owner) return nullptr;
-    return G::sowSeedItemLookup(owner);
+    return SafeSowSeedItemLookup(owner);
 }
 
 static bool RangeSowingCheckSeedItem(void* item) {
-    return item && G::sowSeedItemCheck && G::sowSeedItemCheck(item, 0, 0);
+    return item && G::sowSeedItemCheck && SafeSowSeedItemCheck(item, 0, 0);
 }
 
 // ============================================================
@@ -671,6 +813,16 @@ static bool RangeSowingSettleNativeExtrasImpl(
 //   不可播 => 草地 / 不同类型耕地，作为边界停止
 // 上限 SOWING_MAX_CONNECTED_TILES（保护，防止超大田地一次播完）。
 // 返回值：收集到的可播相邻地块 key 数量（含中心）。
+//
+// v1.3.5（用户反馈修复）：四邻域偏移坐标系错误——旧代码直接用世界轴
+// 偏移 ±45（rowDeltas={-1,1,0,0}, colDeltas={0,0,-1,1}），但 45 度菱形
+// 格子中心坐标是 (45(i+j), 45(j-i))，世界轴 ±45 落点解出 j'=j+0.5
+// ——在两格中缝，不是任何格子中心（SowingOffsetKeyNative 往返校验
+// 失败不入队 / validateLand 拒绝）→ Flood-Fill 永远只收集到中心一格
+// → planCount=0 → settlementMismatch，连通模式对普通田地/田垄全失效。
+// 修复：四邻域改为屏幕格子偏移 (dx,dy) ∈ {(±1,0),(0,±1)}，经与
+// RangeSowingGridKey（3x3/5x5 已验证）相同的基向量变换
+// rowDelta = dy - dx, colDelta = dy + dx 得到正确世界偏移。
 // ============================================================
 static size_t SowingBuildConnectedPlan(void* mapInfo, void* field,
                                         uint64_t centerKey,
@@ -682,7 +834,7 @@ static size_t SowingBuildConnectedPlan(void* mapInfo, void* field,
         return 0;
 
     // 中心本身必须可播，否则没有扩散基础
-    if (!G::sowValidateLand(mapInfo, centerKey, field))
+    if (!SafeSowValidateLand(mapInfo, centerKey, field))
         return 0;
 
     // 已收集集合（线性搜索去重，零碰撞）
@@ -713,15 +865,18 @@ static size_t SowingBuildConnectedPlan(void* mapInfo, void* field,
         outKeys[count++] = cur;
         if (count >= outCapacity) break;
 
-        // 四邻域（45 度网格的轴向邻居）
-        static const long long rowDeltas[4] = {-1, 1, 0, 0};
-        static const long long colDeltas[4] = {0, 0, -1, 1};
+        // 四邻域：屏幕格子坐标偏移 → 45 度斜格基向量变换
+        // （v1.3.5 修复：与 RangeSowingGridKey 同坐标系，世界轴直偏会落在格子中缝）
+        static const int nbDx[4] = {1, -1, 0, 0};
+        static const int nbDy[4] = {0, 0, 1, -1};
         for (int dir = 0; dir < 4; ++dir) {
+            const long long rowDelta = (long long)nbDy[dir] - nbDx[dir];
+            const long long colDelta = (long long)nbDy[dir] + nbDx[dir];
             uint64_t neighbor = 0;
-            if (!SowingOffsetKeyNative(cur, rowDeltas[dir], colDeltas[dir], &neighbor))
+            if (!SowingOffsetKeyNative(cur, rowDelta, colDelta, &neighbor))
                 continue;
             // 邻居可播才入队（同类型耕地）
-            if (!G::sowValidateLand(mapInfo, neighbor, field))
+            if (!SafeSowValidateLand(mapInfo, neighbor, field))
                 continue;
             // 检查邻居是否已入队或已收集
             bool nbSeen = false;
@@ -745,6 +900,64 @@ static bool SafeSowSettle(void* state) {
     }
 }
 
+// H10: SEH 安全包装——7 个原生函数调用异常保护
+// 单独 noinline 函数避免 C2712（对象展开与 __try 不兼容）
+__declspec(noinline) static void* SafeStateManagerLookup(void* owner) {
+    __try {
+        return G::stateManagerLookup(owner);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+__declspec(noinline) static bool SafeSowValidateLand(void* mapInfo, uint64_t key, void* field) {
+    __try {
+        return G::sowValidateLand(mapInfo, key, field);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+__declspec(noinline) static bool SafeSowValidateState(void* state) {
+    __try {
+        return G::sowValidateState(state);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+__declspec(noinline) static void* SafeSowSeedItemLookup(void* owner) {
+    __try {
+        return G::sowSeedItemLookup(owner);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+__declspec(noinline) static bool SafeSowSeedItemCheck(void* item, unsigned char a, unsigned char b) {
+    __try {
+        return G::sowSeedItemCheck(item, a, b);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+__declspec(noinline) static uint64_t SafeSowWorldToKey(const SowingWorldPoint* point) {
+    __try {
+        return G::sowWorldToKey(point);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+__declspec(noinline) static SowingWorldPoint* SafeSowKeyToWorld(SowingWorldPoint* point, uint64_t key) {
+    __try {
+        return G::sowKeyToWorld(point, key);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
 static RangeSowingBatchResult RangeSowingSettleNativeExtras(
         void* state, int mode, uint64_t centerKey,
         const SowingCenterItemSnapshot& centerItem) {
@@ -760,31 +973,70 @@ static RangeSowingBatchResult RangeSowingSettleNativeExtras(
     SowingReadRegionCacheScope readCacheScope(&readCache);
 
     void* manager = RangeSowingGetManager(state);
-    void* mapInfo = SowingReadPointer(manager, 0x310);
+    void* mapInfo = SowingReadPointer(manager, MANAGER_MAPINFO_OFFSET);
     void* save = SowingGetSaveData();
-    if (!manager || !mapInfo || !save || !centerItem.valid ||
-        save != centerItem.save) {
+    if (!manager || !mapInfo || !centerItem.valid) {
         result.settlementMismatch = true;
         return result;
     }
-
-    // 验证中心物品当前一致性
-    uint32_t liveSelectedIndex = 0;
-    size_t liveUnlockedCapacity = 0;
-    void* selectedSlotItem = nullptr;
-    void* installedItem = nullptr;
-    if (!SowingReadUnlockedInventoryCapacity(save, &liveUnlockedCapacity) ||
-        !SowingTryReadU32(save, SAVE_SELECTED_ITEM_INDEX_OFFSET, &liveSelectedIndex) ||
-        !SowingTryReadPointer(save,
-            SAVE_INVENTORY_SLOTS_OFFSET + (size_t)centerItem.selectedIndex * sizeof(void*),
-            &selectedSlotItem) ||
-        !SowingTryReadPointer(state, SOWING_STATE_LAND_OFFSET, &installedItem) ||
-        liveUnlockedCapacity != centerItem.unlockedCapacity ||
-        liveSelectedIndex != centerItem.selectedIndex ||
-        selectedSlotItem != centerItem.item ||
-        installedItem != centerItem.item) {
-        result.selectedItemChanged = true;
-        return result;
+    // v1.3.25-diag: manager/mapInfo 健康度诊断（2s 限频）
+    {
+        static ULONGLONG s_mapInfoDiagTime = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - s_mapInfoDiagTime >= 2000) {
+            s_mapInfoDiagTime = now;
+            void* mi30 = (mapInfo && SowingIsReadable(reinterpret_cast<unsigned char*>(mapInfo) + 0x30, sizeof(void*)))
+                         ? SowingReadPointer(mapInfo, 0x30) : nullptr;
+#if DIAG_SOWER
+            Log("[Sower] [diag] mapinfo: manager=%p mapInfo=%p [mI+0x30]=%p off=0x%llX\n",
+                manager, mapInfo, mi30, (unsigned long long)MANAGER_MAPINFO_OFFSET);
+#endif
+            if (manager && SowingIsReadable(reinterpret_cast<unsigned char*>(manager) + 0x2F8, 0x50)) {
+                for (uintptr_t off = 0x300; off <= 0x340; off += 8) {
+                    uint64_t v = SowingReadU64(manager, off);
+#if DIAG_SOWER
+                    Log("[Sower] [diag] dump: m+0x%llX=%016llX\n",
+                        (unsigned long long)off, (unsigned long long)v);
+#endif
+                }
+            }
+        }
+    }
+    // v1.3.15: save data 验证仅在 saveDataOk 时执行
+    if (centerItem.saveDataOk) {
+        if (!save || save != centerItem.save) {
+            result.settlementMismatch = true;
+            return result;
+        }
+        uint32_t liveSelectedIndex = 0;
+        size_t liveUnlockedCapacity = 0;
+        void* selectedSlotItem = nullptr;
+        // v1.3.22: state+0x268 语义不稳定——模式1 实测为 key、模式2/3 实测为
+        // item 指针（sd dump：模式1 0x268==centerKey，模式2/3 0x268=0x44EB37C0）。
+        // 精确对比必误杀，放宽为合法值校验（非 0 非 -1），防竞态由
+        // count/QUERY 回读/liveCenterInfo/SafeSow* 层承担（回归 v1.09 简洁哲学）
+        uint64_t installedLandKey = 0;
+        if (!SowingReadUnlockedInventoryCapacity(save, &liveUnlockedCapacity) ||
+            !SowingTryReadU32(save, SAVE_SELECTED_ITEM_INDEX_OFFSET, &liveSelectedIndex) ||
+            !SowingTryReadPointer(save,
+                SAVE_INVENTORY_SLOTS_OFFSET + (size_t)centerItem.selectedIndex * sizeof(void*),
+                &selectedSlotItem) ||
+            !SowingTryReadU64(state, SOWING_STATE_LAND_OFFSET, &installedLandKey) ||
+            installedLandKey == 0 || installedLandKey == ~uint64_t{0} ||
+            liveUnlockedCapacity != centerItem.unlockedCapacity ||
+            liveSelectedIndex != centerItem.selectedIndex ||
+            selectedSlotItem != centerItem.item) {
+            result.selectedItemChanged = true;
+            return result;
+        }
+    } else {
+        // v1.3.15: state-only 模式——v1.3.22: 0x268 语义不稳定，改合法值校验
+        uint64_t installedLandKey = 0;
+        if (!SowingTryReadU64(state, SOWING_STATE_LAND_OFFSET, &installedLandKey) ||
+            installedLandKey == 0 || installedLandKey == ~uint64_t{0}) {
+            result.selectedItemChanged = true;
+            return result;
+        }
     }
     const SowingLandInfo liveCenterInfo = SowingInspectLand(centerItem.item);
     if (!liveCenterInfo.readable ||
@@ -805,6 +1057,11 @@ static RangeSowingBatchResult RangeSowingSettleNativeExtras(
         const size_t filled = SowingBuildConnectedPlan(
             mapInfo, centerItem.info.field, centerKey,
             planKeys, SOWING_MAX_TILES);
+#if DIAG_SOWER
+        Log("[Sower] [diag] connected plan: filled=%u center=0x%llX field=%p mapInfo=%p\n",
+            (unsigned)filled, (unsigned long long)centerKey,
+            centerItem.info.field, mapInfo);
+#endif
         if (filled == 0) {
             result.settlementMismatch = true;
             return result;
@@ -842,7 +1099,9 @@ static RangeSowingBatchResult RangeSowingSettleNativeExtras(
         settled, budgetExhausted, stopIdx);
     result.settled = settled;
     result.attempted = planCount;
-    if (budgetExhausted && mode == 3 && stopIdx < planCount) {
+    if (budgetExhausted && stopIdx < planCount) {
+        // v1.3.36 修复：限速后所有模式（1/2/3）都需要续播队列接力
+        // 原条件 mode==3 只覆盖连通模式，3x3/5x5 每帧 1 格后剩余格被丢弃
         size_t remain = planCount - stopIdx;
         size_t keep = remain < SOWING_MAX_CONNECTED_TILES ? remain : SOWING_MAX_CONNECTED_TILES;
         g_sowingResumeQueue.state = state;
@@ -863,29 +1122,45 @@ static SowingSettleTileResult SowingSettleTileCore(
         const SowingCenterItemSnapshot& centerItem,
         void* save, void* mapInfo,
         const SowingLandInfo& centerInfo) {
-    if (!state || !save || !mapInfo || !centerItem.valid)
+    if (!state || !mapInfo || !centerItem.valid)
         return kSettleMismatch;
-
-    // 验证中心物品实时一致性
-    uint32_t curSelectedIndex = 0;
-    size_t curUnlockedCapacity = 0;
-    void* curSlotItem = nullptr;
-    void* curStateItem = nullptr;
-    if (!SowingReadUnlockedInventoryCapacity(save, &curUnlockedCapacity) ||
-        !SowingTryReadU32(save, SAVE_SELECTED_ITEM_INDEX_OFFSET, &curSelectedIndex) ||
-        !SowingTryReadPointer(save,
-            SAVE_INVENTORY_SLOTS_OFFSET + (size_t)centerItem.selectedIndex * sizeof(void*),
-            &curSlotItem) ||
-        !SowingTryReadPointer(state, SOWING_STATE_LAND_OFFSET, &curStateItem)) {
-        return kSettleMismatch;
+    // v1.3.15: save data 验证仅在 saveDataOk 时执行
+    // v1.3.21: state+0x268 语义随 phase 变化——phase 0(capture)为 land 指针、
+    // phase 1(settle)为地块 key（sd dump 实锤 0x268==centerKey）。旧"item 指针
+    // 一致性"对比在 phase 1 必失败 → 静默 return false / kSettleItemChanged，
+    // 与日志（attempted=8 settled=0 全标记 0）完全吻合。改为合法 key 校验
+    // （非 0 非 -1），竞态防护由 QUERY 回读/count/liveCenterInfo/SafeSow* 层承担。
+    uint64_t curLandKey = 0;
+    if (centerItem.saveDataOk) {
+        if (!save) return kSettleMismatch;
+        uint32_t curSelectedIndex = 0;
+        size_t curUnlockedCapacity = 0;
+        void* curSlotItem = nullptr;
+        if (!SowingReadUnlockedInventoryCapacity(save, &curUnlockedCapacity) ||
+            !SowingTryReadU32(save, SAVE_SELECTED_ITEM_INDEX_OFFSET, &curSelectedIndex) ||
+            !SowingTryReadPointer(save,
+                SAVE_INVENTORY_SLOTS_OFFSET + (size_t)centerItem.selectedIndex * sizeof(void*),
+                &curSlotItem) ||
+            !SowingTryReadU64(state, SOWING_STATE_LAND_OFFSET, &curLandKey) ||
+            curLandKey == 0 || curLandKey == ~uint64_t{0}) {
+            return kSettleMismatch;
+        }
+        if (curUnlockedCapacity != centerItem.unlockedCapacity ||
+            curSelectedIndex != centerItem.selectedIndex ||
+            curSlotItem != centerItem.item) {
+            return kSettleItemChanged;
+        }
+    } else {
+        // v1.3.15: state-only 模式——v1.3.21: 0x268 为 key，合法值校验
+        if (!SowingTryReadU64(state, SOWING_STATE_LAND_OFFSET, &curLandKey) ||
+            curLandKey == 0 || curLandKey == ~uint64_t{0}) {
+            return kSettleItemChanged;
+        }
     }
-    if (curUnlockedCapacity != centerItem.unlockedCapacity ||
-        curSelectedIndex != centerItem.selectedIndex ||
-        curSlotItem != centerItem.item ||
-        curStateItem != centerItem.item) {
-        return kSettleItemChanged;
-    }
-    const SowingLandInfo curItemInfo = SowingInspectLand(curStateItem);
+    // v1.3.21: 旧代码 SowingInspectLand(curStateItem)——phase 1 的 0x268 是 key
+    // 非 item 指针，InspectLand(key) 必 readable=false 误报 mismatch。
+    // 改用 centerItem.item（phase 0 捕获的 land 真指针，与 Impl 的 liveCenterInfo 同源）
+    const SowingLandInfo curItemInfo = SowingInspectLand(centerItem.item);
     if (!curItemInfo.readable ||
         curItemInfo.head != centerItem.info.head ||
         curItemInfo.action != ACTION_SOW ||
@@ -894,8 +1169,21 @@ static SowingSettleTileResult SowingSettleTileCore(
     }
 
     // 地块验证
-    if (!G::sowValidateLand(mapInfo, key, centerItem.info.field))
+    // v1.3.23-diag: kSettleSkip 三点定位诊断（一次实测区分失败点）
+    if (!SafeSowValidateLand(mapInfo, key, centerItem.info.field)) {
+        static ULONGLONG s_skipLandTime = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - s_skipLandTime >= 2000) {
+            s_skipLandTime = now;
+            void* mi30 = (mapInfo && SowingIsReadable(reinterpret_cast<unsigned char*>(mapInfo) + 0x30, sizeof(void*)))
+                         ? SowingReadPointer(mapInfo, 0x30) : nullptr;
+#if DIAG_SOWER
+            Log("[Sower] [diag] tile skip: reason=validate_land key=0x%llX field=%p mapInfo=%p [mI+0x30]=%p\n",
+                (unsigned long long)key, centerItem.info.field, mapInfo, mi30);
+#endif
+        }
         return kSettleSkip;
+    }
 
     // 种子可用性检查
     void* seedItem = RangeSowingGetSeedItem(state);
@@ -914,35 +1202,72 @@ static SowingSettleTileResult SowingSettleTileCore(
     }
 
     // 状态验证
-    if (!G::sowValidateState(state)) return kSettleSkip;
+    if (!SafeSowValidateState(state)) {
+        static ULONGLONG s_skipStateTime = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - s_skipStateTime >= 2000) {
+            s_skipStateTime = now;
+#if DIAG_SOWER
+            Log("[Sower] [diag] tile skip: reason=validate_state key=0x%llX\n",
+                (unsigned long long)key);
+#endif
+        }
+        return kSettleSkip;
+    }
     const uint64_t selectedKey = SowingReadU64(state, SOWING_STATE_SELECTED_KEY_OFFSET);
-    if (selectedKey != key) return kSettleSkip;
+    if (selectedKey != key) {
+        static ULONGLONG s_skipSelTime = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - s_skipSelTime >= 2000) {
+            s_skipSelTime = now;
+#if DIAG_SOWER
+            Log("[Sower] [diag] tile skip: reason=selected_key key=0x%llX selected=0x%llX\n",
+                (unsigned long long)key, (unsigned long long)selectedKey);
+#endif
+        }
+        return kSettleSkip;
+    }
 
     // 结算前再次验证物品
-    uint32_t settleSelIdx = 0;
-    void* settleSlot = nullptr;
-    void* settleState = nullptr;
-    if (!SowingTryReadU32(save, SAVE_SELECTED_ITEM_INDEX_OFFSET, &settleSelIdx) ||
-        !SowingTryReadPointer(save,
-            SAVE_INVENTORY_SLOTS_OFFSET + (size_t)centerItem.selectedIndex * sizeof(void*),
-            &settleSlot) ||
-        !SowingTryReadPointer(state, SOWING_STATE_LAND_OFFSET, &settleState)) {
-        return kSettleMismatch;
-    }
-    if (settleSelIdx != centerItem.selectedIndex ||
-        settleSlot != centerItem.item ||
-        settleState != centerItem.item) {
-        return kSettleItemChanged;
+    // v1.3.21: 0x268 为 key（phase 1），settleState 指针对比必失败——改合法 key 校验
+    if (centerItem.saveDataOk) {
+        uint32_t settleSelIdx = 0;
+        void* settleSlot = nullptr;
+        uint64_t settleLandKey = 0;
+        if (!SowingTryReadU32(save, SAVE_SELECTED_ITEM_INDEX_OFFSET, &settleSelIdx) ||
+            !SowingTryReadPointer(save,
+                SAVE_INVENTORY_SLOTS_OFFSET + (size_t)centerItem.selectedIndex * sizeof(void*),
+                &settleSlot) ||
+            !SowingTryReadU64(state, SOWING_STATE_LAND_OFFSET, &settleLandKey) ||
+            settleLandKey == 0 || settleLandKey == ~uint64_t{0}) {
+            return kSettleMismatch;
+        }
+        if (settleSelIdx != centerItem.selectedIndex ||
+            settleSlot != centerItem.item) {
+            return kSettleItemChanged;
+        }
+    } else {
+        // v1.3.15: state-only 模式
+        uint64_t settleLandKey = 0;
+        if (!SowingTryReadU64(state, SOWING_STATE_LAND_OFFSET, &settleLandKey) ||
+            settleLandKey == 0 || settleLandKey == ~uint64_t{0}) {
+            return kSettleItemChanged;
+        }
     }
 
     // 种子数量检查
     uint32_t seedQtyBefore = 0;
     uint8_t skipDeductBefore = 0;
     if (!SowingTryReadU32(centerItem.item, ITEM_STACK_COUNT_OFFSET, &seedQtyBefore) ||
-        !SowingTryReadU8(save, SAVE_SKIP_ITEM_DEDUCTION_OFFSET, &skipDeductBefore) ||
         seedQtyBefore == 0) {
         return kSettleMismatch;
     }
+    if (centerItem.saveDataOk) {
+        if (!SowingTryReadU8(save, SAVE_SKIP_ITEM_DEDUCTION_OFFSET, &skipDeductBefore)) {
+            return kSettleMismatch;
+        }
+    }
+    // v1.3.15: state-only 模式下 skipDeductBefore=0（正常扣减模式）
 
     // 执行结算
     uint32_t countBefore = 0;
@@ -959,53 +1284,71 @@ static SowingSettleTileResult SowingSettleTileCore(
     }
 
     // 结算后验证
-    uint32_t postSelIdx = 0;
-    void* postSlot = nullptr;
-    void* postState = nullptr;
-    if (!SowingTryReadU32(save, SAVE_SELECTED_ITEM_INDEX_OFFSET, &postSelIdx) ||
-        !SowingTryReadPointer(save,
-            SAVE_INVENTORY_SLOTS_OFFSET + (size_t)centerItem.selectedIndex * sizeof(void*),
-            &postSlot) ||
-        !SowingTryReadPointer(state, SOWING_STATE_LAND_OFFSET, &postState)) {
-        return kSettleMismatch;
-    }
-    uint8_t skipDeductAfter = 0;
-    if (!SowingTryReadU8(save, SAVE_SKIP_ITEM_DEDUCTION_OFFSET, &skipDeductAfter) ||
-        skipDeductAfter != skipDeductBefore) {
-        return kSettleMismatch;
-    }
+    // v1.3.15: state-only 模式下简化验证（不依赖 save data 偏移）
+    if (centerItem.saveDataOk) {
+        uint32_t postSelIdx = 0;
+        void* postSlot = nullptr;
+        // v1.3.21: 0x268 在 phase 1 全程为 key，指针对比必失败——改合法 key 校验
+        uint64_t postLandKey = 0;
+        if (!SowingTryReadU32(save, SAVE_SELECTED_ITEM_INDEX_OFFSET, &postSelIdx) ||
+            !SowingTryReadPointer(save,
+                SAVE_INVENTORY_SLOTS_OFFSET + (size_t)centerItem.selectedIndex * sizeof(void*),
+                &postSlot) ||
+            !SowingTryReadU64(state, SOWING_STATE_LAND_OFFSET, &postLandKey) ||
+            postLandKey == 0 || postLandKey == ~uint64_t{0}) {
+            return kSettleMismatch;
+        }
+        uint8_t skipDeductAfter = 0;
+        if (!SowingTryReadU8(save, SAVE_SKIP_ITEM_DEDUCTION_OFFSET, &skipDeductAfter) ||
+            skipDeductAfter != skipDeductBefore) {
+            return kSettleMismatch;
+        }
 
-    if (skipDeductBefore != 0) {
-        // 不扣减模式：种子数量不变
+        if (skipDeductBefore != 0) {
+            // 不扣减模式：种子数量不变
+            uint32_t seedQtyAfter = 0;
+            if (postSelIdx != centerItem.selectedIndex ||
+                postSlot != centerItem.item ||
+                !SowingTryReadU32(centerItem.item, ITEM_STACK_COUNT_OFFSET, &seedQtyAfter) ||
+                seedQtyAfter != seedQtyBefore) {
+                return kSettleMismatch;
+            }
+            return kSettleOk;
+        }
+
+        if (seedQtyBefore == 1) {
+            // 种子用完：原生会清空槽位
+            if (postSlot == centerItem.item) {
+                return kSettleMismatch;
+            }
+            return kSettleSeedDepleted;
+        }
+
+        // 正常扣减：种子数量应 -1
         uint32_t seedQtyAfter = 0;
         if (postSelIdx != centerItem.selectedIndex ||
             postSlot != centerItem.item ||
-            postState != centerItem.item ||
             !SowingTryReadU32(centerItem.item, ITEM_STACK_COUNT_OFFSET, &seedQtyAfter) ||
-            seedQtyAfter != seedQtyBefore) {
+            seedQtyAfter != seedQtyBefore - 1) {
+            return kSettleMismatch;
+        }
+        return kSettleOk;
+    } else {
+        // v1.3.15: state-only 模式——结算后只验证 count+1 和种子数量
+        uint32_t seedQtyAfter = 0;
+        if (!SowingTryReadU32(centerItem.item, ITEM_STACK_COUNT_OFFSET, &seedQtyAfter)) {
+            return kSettleMismatch;
+        }
+        if (seedQtyBefore == 1) {
+            // 种子用完
+            return kSettleSeedDepleted;
+        }
+        // 正常扣减：种子数量应 -1
+        if (seedQtyAfter != seedQtyBefore - 1) {
             return kSettleMismatch;
         }
         return kSettleOk;
     }
-
-    if (seedQtyBefore == 1) {
-        // 种子用完：原生会清空槽位
-        if (postSlot == centerItem.item || postState == centerItem.item) {
-            return kSettleMismatch;
-        }
-        return kSettleSeedDepleted;
-    }
-
-    // 正常扣减：种子数量应 -1
-    uint32_t seedQtyAfter = 0;
-    if (postSelIdx != centerItem.selectedIndex ||
-        postSlot != centerItem.item ||
-        postState != centerItem.item ||
-        !SowingTryReadU32(centerItem.item, ITEM_STACK_COUNT_OFFSET, &seedQtyAfter) ||
-        seedQtyAfter != seedQtyBefore - 1) {
-        return kSettleMismatch;
-    }
-    return kSettleOk;
 }
 
 // 批量结算（带时间预算）：返回已结算数量和是否预算耗尽
@@ -1021,6 +1364,21 @@ static bool RangeSowingSettleNativeExtrasImpl(
         !G::sowValidateState || !G::sowSettle ||
         !G::sowRefreshLand || !G::sowValidateLand ||
         centerKey == 0 || centerKey == ~uint64_t{0}) {
+        // v1.3.20: 前置检查失败诊断（v1.3.19 的后置诊断未打印说明在此就 return）
+        static ULONGLONG s_preFailTime = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - s_preFailTime >= 2000) {
+            s_preFailTime = now;
+#if DIAG_SOWER
+            Log("[Sower] [diag] settle pre-fail: state=%p planKeys=%p planCount=%zu "
+                "validateState=%p settle=%p refreshLand=%p validateLand=%p "
+                "centerKey=0x%llX\n",
+                state, planKeys, planCount,
+                G::sowValidateState, G::sowSettle,
+                G::sowRefreshLand, G::sowValidateLand,
+                (unsigned long long)centerKey);
+#endif
+        }
         return false;
     }
 
@@ -1028,35 +1386,100 @@ static bool RangeSowingSettleNativeExtrasImpl(
     SowingReadRegionCacheScope readCacheScope(&readCache);
 
     void* manager = RangeSowingGetManager(state);
-    void* mapInfo = SowingReadPointer(manager, 0x310);
+    void* mapInfo = SowingReadPointer(manager, MANAGER_MAPINFO_OFFSET);
     void* save = SowingGetSaveData();
-    if (!manager || !mapInfo || !save || !centerItem.valid ||
-        save != centerItem.save) {
+    if (!manager || !mapInfo || !centerItem.valid) {
+        static ULONGLONG s_settleAbortTime = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - s_settleAbortTime >= 2000) {
+            s_settleAbortTime = now;
+#if DIAG_SOWER
+            Log("[Sower] [diag] settle abort: manager=%p mapInfo=%p valid=%d\n",
+                manager, mapInfo, (int)centerItem.valid);
+#endif
+        }
         return false;
     }
-
-    // 验证中心物品当前一致性
-    uint32_t liveSelectedIndex = 0;
-    size_t liveUnlockedCapacity = 0;
-    void* selectedSlotItem = nullptr;
-    void* installedItem = nullptr;
-    if (!SowingReadUnlockedInventoryCapacity(save, &liveUnlockedCapacity) ||
-        !SowingTryReadU32(save, SAVE_SELECTED_ITEM_INDEX_OFFSET, &liveSelectedIndex) ||
-        !SowingTryReadPointer(save,
-            SAVE_INVENTORY_SLOTS_OFFSET + (size_t)centerItem.selectedIndex * sizeof(void*),
-            &selectedSlotItem) ||
-        !SowingTryReadPointer(state, SOWING_STATE_LAND_OFFSET, &installedItem) ||
-        liveUnlockedCapacity != centerItem.unlockedCapacity ||
-        liveSelectedIndex != centerItem.selectedIndex ||
-        selectedSlotItem != centerItem.item ||
-        installedItem != centerItem.item) {
-        return false;
+    // v1.3.15: save data 验证仅在 saveDataOk 时执行
+    if (centerItem.saveDataOk) {
+        // v1.3.21: state+0x268 (SOWING_STATE_LAND) 在 v1.20 存的是地块 key
+        // 而非 item 指针（sd dump 实锤 0x268==batch key；capture 侧 0x248 QUERY
+        // 同为 key 且已用 TryReadU64）。旧指针读法对 key 值必失败 → settle 在此
+        // 静默 return false（v1.3.19/20 三个诊断点均无日志 + settled=0 佐证）。
+        // 改为 key 对比 + 子条件诊断（一次实测定位失败子项）。
+        const bool saveOk = save && save == centerItem.save;
+        uint32_t liveSelectedIndex = 0;
+        size_t liveUnlockedCapacity = 0;
+        void* selectedSlotItem = nullptr;
+        uint64_t installedLandKey = 0;
+        const bool capOk =
+            SowingReadUnlockedInventoryCapacity(save, &liveUnlockedCapacity) &&
+            liveUnlockedCapacity == centerItem.unlockedCapacity;
+        const bool selOk =
+            SowingTryReadU32(save, SAVE_SELECTED_ITEM_INDEX_OFFSET,
+                            &liveSelectedIndex) &&
+            liveSelectedIndex == centerItem.selectedIndex;
+        const bool slotOk = SowingTryReadPointer(
+            save, SAVE_INVENTORY_SLOTS_OFFSET +
+                      (size_t)centerItem.selectedIndex * sizeof(void*),
+            &selectedSlotItem) && selectedSlotItem == centerItem.item;
+        const bool landOk = SowingTryReadU64(state, SOWING_STATE_LAND_OFFSET,
+                                             &installedLandKey) &&
+                            installedLandKey != 0 &&
+                            installedLandKey != ~uint64_t{0};
+        if (!saveOk || !capOk || !selOk || !slotOk || !landOk) {
+            static ULONGLONG s_settleSaveFailTime = 0;
+            ULONGLONG now = GetTickCount64();
+            if (now - s_settleSaveFailTime >= 2000) {
+                s_settleSaveFailTime = now;
+#if DIAG_SOWER
+                Log("[Sower] [diag] settle saveData fail: save=%d cap=%d "
+                    "sel=%d slot=%d land=%d landKey=0x%llX centerKey=0x%llX\n",
+                    (int)saveOk, (int)capOk, (int)selOk, (int)slotOk,
+                    (int)landOk, (unsigned long long)installedLandKey,
+                    (unsigned long long)centerKey);
+#endif
+            }
+            return false;
+        }
+    } else {
+        // v1.3.15: state-only 模式
+        // v1.3.22: 0x268 语义不稳定（模式1=key/模式2-3=item指针），改合法值校验
+        uint64_t installedLandKey = 0;
+        if (!SowingTryReadU64(state, SOWING_STATE_LAND_OFFSET,
+                              &installedLandKey) ||
+            installedLandKey == 0 || installedLandKey == ~uint64_t{0}) {
+            static ULONGLONG s_settleLandFailTime = 0;
+            ULONGLONG now = GetTickCount64();
+            if (now - s_settleLandFailTime >= 2000) {
+                s_settleLandFailTime = now;
+#if DIAG_SOWER
+                Log("[Sower] [diag] settle state-only land invalid: "
+                    "landKey=0x%llX\n",
+                    (unsigned long long)installedLandKey);
+#endif
+            }
+            return false;
+        }
     }
     const SowingLandInfo liveCenterInfo = SowingInspectLand(centerItem.item);
     if (!liveCenterInfo.readable ||
         liveCenterInfo.head != centerItem.info.head ||
         liveCenterInfo.action != ACTION_SOW ||
         liveCenterInfo.field != centerItem.info.field) {
+        static ULONGLONG s_settleLiveTime = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - s_settleLiveTime >= 2000) {
+            s_settleLiveTime = now;
+#if DIAG_SOWER
+            Log("[Sower] [diag] settle liveCenter mismatch: readable=%d "
+                "liveHead=%p capHead=%p liveAction=0x%llx capField=%p liveField=%p\n",
+                (int)liveCenterInfo.readable,
+                liveCenterInfo.head, centerItem.info.head,
+                (unsigned long long)liveCenterInfo.action,
+                centerItem.info.field, liveCenterInfo.field);
+#endif
+        }
         return false;
     }
 
@@ -1081,8 +1504,14 @@ static bool RangeSowingSettleNativeExtrasImpl(
 
     g_insideRangeSowing = true;
     const uint64_t frameStart = SowingNowUs();
+    // v1.3.35-diag: 播种结算耗时统计（定位卡顿）
+    uint64_t settleSlowTotal = 0;
+    uint64_t settleSlowMax = 0;
+    size_t settleSlowCount = 0;
     size_t idx = startIdx;
     while (idx < planCount) {
+        // v1.3.39: 回退限速——续播与播种状态机生命周期不匹配导致丢格；
+        // 3x3/5x5 一次播完 222us 远低于 2ms 预算本就不卡，卡时走预算 break+续播泵
         const uint64_t key = planKeys[idx++];
         if (key == 0 || key == ~uint64_t{0}) continue;
         // 去重（不应与中心 key 重复）
@@ -1095,11 +1524,19 @@ static bool RangeSowingSettleNativeExtrasImpl(
 
         // 每结算 1 格后检查时间预算（首次不检查，保证至少播 1 格）
         if (idx > startIdx + 1 && frameStart != 0 && SowingNowUs() - frameStart > SOWING_FRAME_BUDGET_US) {
+            --idx;  // M4: 回退到未结算的格子，避免跳过一格
             budgetExhaustedOut = true;
             break;
         }
 
+        const uint64_t tTile0 = SowingNowUs();
         const SowingSettleTileResult code = SowingSettleTileCore(state, key, centerItem, save, mapInfo, liveCenterInfo);
+        const uint64_t tTile1 = SowingNowUs();
+        if (tTile1 - tTile0 > 1000) {
+            ++settleSlowCount;
+            settleSlowTotal += tTile1 - tTile0;
+            if (tTile1 - tTile0 > settleSlowMax) settleSlowMax = tTile1 - tTile0;
+        }
         switch (code) {
             case kSettleOk: ++settledOut; break;
             case kSettleSkip: break;
@@ -1112,6 +1549,12 @@ static bool RangeSowingSettleNativeExtrasImpl(
     }
 
 done_batch:
+#if DIAG_SOWER
+    Log("[Sower] [diag] settle batch: %d tiles in %llu us (budgetHit=%d slow>1ms:%u total=%llu max=%llu)\n",
+        (int)settledOut, (unsigned long long)(SowingNowUs() - frameStart),
+        (int)budgetExhaustedOut, (unsigned)settleSlowCount,
+        (unsigned long long)settleSlowTotal, (unsigned long long)settleSlowMax);
+#endif
     stopIdxOut = idx;
     // 恢复 state 临时字段
     memcpy(reinterpret_cast<unsigned char*>(state) + SOWING_STATE_QUERY_OFFSET,
@@ -1171,11 +1614,14 @@ static void RangeSowingResumePump() {
         // 仍有剩余格子，更新游标，下一帧继续
         g_sowingResumeQueue.cursor = stopIdx;
         g_sowingResumeQueue.delayFrames = 1;
+        Log("[Sower] [resume] pumped %d, cursor=%d/%d\n", (int)settled,
+            (int)stopIdx, (int)g_sowingResumeQueue.count);
     } else {
         // 全部完成（或种子耗尽等终止条件），清空队列
         g_sowingResumeQueue.active = false;
         g_sowingResumeQueue.count = 0;
         g_sowingResumeQueue.cursor = 0;
+        Log("[Sower] [resume] done (settled=%d)\n", (int)settled);
     }
 }
 
@@ -1264,10 +1710,35 @@ static bool RangeSowingNativeBatchUpdate(void* state, int mode) {
     const bool publishedToRunner = runnerBefore && phaseAfter == 1 && nextAfter == 0;
     const bool immediatelyCommitted = !runnerBefore && phaseAfter == 0 && nextAfter == 0xFFFFFFFFu;
 
-    if (nextBefore != 0xFFFFFFFFu || countAfter != countBefore + 1 ||
-        (!publishedToRunner && !immediatelyCommitted)) {
+    // v1.3.13: v1.20 诊断实锤——next_phase 并非始终 FFFFFFFF：
+    // 播种后 nextBefore=FFFFFFFF→nextAfter=0, count 0→1, published=1。
+    // v1.3.12 逻辑反转 bug：else 分支忘了取反"未结算"条件→已结算被当未结算。
+    // 修正：nextPhaseDead 仅在 before+after 均 FFFFFFFF 时为真（真正失效）；
+    // else 分支用原始条件的取反（即"已结算"= nextBefore==pending && count++ && (published||committed)）。
+    const bool nextPhaseDead = (nextBefore == 0xFFFFFFFFu && nextAfter == 0xFFFFFFFFu);
+    const bool centerSettled = nextPhaseDead
+        ? (countAfter == countBefore + 1)
+        : (nextBefore == 0xFFFFFFFFu && countAfter == countBefore + 1 &&
+           (publishedToRunner || immediatelyCommitted));
+
+    if (!centerSettled) {
         const bool stillWaiting = nextBefore == 0xFFFFFFFFu && countAfter == countBefore &&
                                    phaseAfter == 1 && nextAfter == 0xFFFFFFFFu;
+        // v1.3.10-diag: 中心结算未成功的原因（限频 1s）——区分状态机结构漂移
+        if (!stillWaiting) {
+            static ULONGLONG s_lastFailDiag = 0;
+            const ULONGLONG nowFailDiag = GetTickCount64();
+            if (nowFailDiag - s_lastFailDiag >= 1000) {
+                s_lastFailDiag = nowFailDiag;
+#if DIAG_SOWER
+                Log("[Sower] [diag] center not settled: phase=%u->%u next=%u->%u "
+                    "count=%u->%u runner=%p published=%d committed=%d",
+                    phaseBefore, phaseAfter, nextBefore, nextAfter,
+                    countBefore, countAfter, runnerBefore,
+                    (int)publishedToRunner, (int)immediatelyCommitted);
+#endif
+            }
+        }
         if (!stillWaiting && g_sowingPendingCenterItem.state == state)
             g_sowingPendingCenterItem = {};
         return nativeOk;
@@ -1280,8 +1751,18 @@ static bool RangeSowingNativeBatchUpdate(void* state, int mode) {
     const uint64_t centerKey = (selectedBefore != 0 && selectedBefore != ~uint64_t{0})
         ? selectedBefore
         : SowingReadU64(state, SOWING_STATE_SELECTED_KEY_OFFSET);
-    if (centerKey == 0 || centerKey == ~uint64_t{0}) return nativeOk;
-    if (!centerItem.valid) return nativeOk;
+    if (centerKey == 0 || centerKey == ~uint64_t{0}) {
+#if DIAG_SOWER
+        Log("[Sower] [diag] centerKey invalid=0x%llX\n", (unsigned long long)centerKey);
+#endif
+        return nativeOk;
+    }
+    if (!centerItem.valid) {
+#if DIAG_SOWER
+        Log("[Sower] [diag] centerSettled but centerItem invalid\n");
+#endif
+        return nativeOk;
+    }
 
     // 执行额外格子批量结算
     RangeSowingBatchResult batch =
@@ -1303,8 +1784,49 @@ static bool RangeSowingNativeBatchUpdate(void* state, int mode) {
 // Detour 函数
 // ============================================================
 static bool __fastcall SowingUpdateDetour(void* state) {
+    // v1.3.10-diag: detour 入口限频日志（≥1s 一条）——验证 hook 是否被调用
+    // + 打印状态机现场值（phase/next/count），一轮播种即可区分
+    // "调用链断裂"（无此日志）vs "结构偏移漂移"（日志出现但值异常）。
+    {
+        static ULONGLONG s_lastEntryDiag = 0;
+        const ULONGLONG nowEntryDiag = GetTickCount64();
+        if (nowEntryDiag - s_lastEntryDiag >= 1000) {
+            s_lastEntryDiag = nowEntryDiag;
+#if DIAG_SOWER
+            Log("[Sower] [diag] detour: mode=%d state=%p phase=%u next=%u count=%u",
+                (int)G::rangeSowingMode.load(std::memory_order_relaxed), state,
+                state ? SowingReadU32(state, SOWING_STATE_PHASE_OFFSET) : 0u,
+                state ? SowingReadU32(state, SOWING_STATE_NEXT_PHASE_OFFSET) : 0u,
+                state ? SowingReadU32(state, SOWING_STATE_COUNT_OFFSET) : 0u);
+#endif
+            // v1.3.11-diag: state 窗口 dump（0x1C0-0x2BF，8 行×8 值）
+            if (state) {
+                for (uintptr_t row = 0x1C0; row <= 0x2A0; row += 0x20) {
+#if DIAG_SOWER
+                    Log("[Sower] [diag] sd[%03X]: %08X %08X %08X %08X %08X %08X %08X %08X",
+                        (unsigned)row,
+                        SowingReadU32(state, row + 0x00), SowingReadU32(state, row + 0x04),
+                        SowingReadU32(state, row + 0x08), SowingReadU32(state, row + 0x0C),
+                        SowingReadU32(state, row + 0x10), SowingReadU32(state, row + 0x14),
+                        SowingReadU32(state, row + 0x18), SowingReadU32(state, row + 0x1C));
+#endif
+                }
+            }
+        }
+    }
     const int mode = G::rangeSowingMode.load(std::memory_order_relaxed);
-    if (g_insideRangeSowing) return false;
+    if (g_insideRangeSowing) {
+        // v1.3.35-diag: 重入事件计数（递归播种 = 卡顿头号嫌疑）
+#if DIAG_SOWER
+        static ULONGLONG sReentryDiag = 0;
+        ULONGLONG nowR = GetTickCount64();
+        if (nowR - sReentryDiag >= 2000) {
+            sReentryDiag = nowR;
+            Log("[Sower] [diag] REENTRY 递归播种重入被拦截\n");
+        }
+#endif
+        return false;
+    }
     if (mode <= 0 || !G::rangeSowingReady || !G::originalSowingUpdate) {
         g_sowingPendingCenterItem = {};
         return G::originalSowingUpdate ? G::originalSowingUpdate(state) : false;
@@ -1317,8 +1839,18 @@ static bool __fastcall SowingUpdateDetour(void* state) {
         return G::originalSowingUpdate(state);
     }
     if (G::rangeSowingNativeBatchReady && G::sowValidateState && G::sowSettle) {
-        return RangeSowingNativeBatchUpdate(state, mode);
+        // v1.3.40-diag: detour 主体实时耗时（定位卡顿是否在 batch 结算内）
+        const uint64_t dT0 = SowingNowUs();
+        const bool dR = RangeSowingNativeBatchUpdate(state, mode);
+        const uint64_t dT1 = SowingNowUs();
+        Log("[Sower] [diag] detour batch took %llu us\n", (unsigned long long)(dT1 - dT0));
+        return dR;
     }
+    // v1.3.14-diag: 记录为何未进入 batch update
+#if DIAG_SOWER
+    Log("[Sower] [diag] detour fallback: batchReady=%d validateState=%p settle=%p\n",
+        (int)G::rangeSowingNativeBatchReady, G::sowValidateState, G::sowSettle);
+#endif
     g_sowingPendingCenterItem = {};
     return G::originalSowingUpdate(state);
 }
@@ -1548,7 +2080,7 @@ static const unsigned char EXPECTED_UPDATE_PROLOGUE[SOWING_HOOK_LENGTH] = {
 // 关键函数头部签名（轻量验证）
 static const unsigned char EXPECTED_STATE_LOOKUP[12] = {
     0x40, 0x53, 0x48, 0x83, 0xEC, 0x20,
-    0x48, 0x8B, 0xD9, 0xE8, 0x12, 0x3A
+    0x48, 0x8B, 0xD9, 0xE8, 0x42, 0x43
 };
 static const unsigned char EXPECTED_SELECT_TARGET[17] = {
     0x48, 0x89, 0x5C, 0x24, 0x18,
@@ -1565,14 +2097,14 @@ static const unsigned char EXPECTED_VALIDATE_LAND[24] = {
 static const unsigned char EXPECTED_REFRESH_LAND[32] = {
     0x48, 0x83, 0xEC, 0x28,
     0x4C, 0x8B, 0xC9,
-    0x48, 0x8B, 0x05, 0xF2, 0xDD, 0xEC, 0x00,
+    0x48, 0x8B, 0x05, 0x92, 0xAA, 0xEE, 0x00,
     0x48, 0x8B, 0x90, 0x08, 0x02, 0x00, 0x00,
     0x48, 0x63, 0x82, 0xB0, 0x33, 0x00, 0x00,
     0x4C, 0x8B, 0x84, 0xC2
 };
 static const unsigned char EXPECTED_SEED_ITEM_LOOKUP[14] = {
     0x40, 0x53, 0x48, 0x83, 0xEC, 0x20,
-    0x48, 0x8B, 0xD9, 0xE8, 0x62, 0xF9, 0x5C, 0x00
+    0x48, 0x8B, 0xD9, 0xE8, 0x02, 0x69, 0x5E, 0x00
 };
 static const unsigned char EXPECTED_SEED_ITEM_CHECK[24] = {
     0x40, 0x53, 0x48, 0x83, 0xEC, 0x20,
@@ -1581,10 +2113,10 @@ static const unsigned char EXPECTED_SEED_ITEM_CHECK[24] = {
     0x00, 0x00, 0x80, 0xB8
 };
 static const unsigned char EXPECTED_VALIDATE_STATE[24] = {
-    0x40, 0x55, 0x57, 0x41, 0x54,
+    0x40, 0x55, 0x57, 0x41, 0x55,
     0x48, 0x8D, 0x6C, 0x24, 0xB9,
-    0x48, 0x81, 0xEC, 0xA0, 0x00, 0x00, 0x00,
-    0x45, 0x33, 0xE4,
+    0x48, 0x81, 0xEC, 0x90, 0x00, 0x00, 0x00,
+    0x45, 0x33, 0xED,
     0x48, 0x8B, 0xF9,
     0x4C
 };
@@ -1806,6 +2338,10 @@ static bool InitHud() {
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
         SOWER_HUD_CLASS, L"", WS_POPUP, 0, 0, width, height,
         nullptr, nullptr, g_sowerModule, nullptr);
+    // v1.3.34: 移除游戏窗口 owner 绑定（hWndParent 原传 QolFindGameWindow()）——
+    // owned TOPMOST 窗口链干扰 Alt+Tab 前台切换，游戏切不回（切窗修复第四轮
+    // 漏网之鱼，其余 5 个 HUD 均已修，详见 game_window.h v1.5 / KB-075；
+    // 2026-10-06 用户实测切窗回归定位）
     if (!g_hudWindow) {
         Log("[Sower] [HUD] CreateWindowExW failed (err=%lu)", GetLastError());
         return false;
@@ -1823,7 +2359,7 @@ static void UpdateHudPosition() {
     if (!g_hudWindow) return;
     MONITORINFO mi = {};
     mi.cbSize = sizeof(mi);
-    HMONITOR mon = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
+    HMONITOR mon = MonitorFromWindow(QolFindGameWindow(), MONITOR_DEFAULTTOPRIMARY);
     if (!GetMonitorInfoW(mon, &mi)) {
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
     }
@@ -1846,13 +2382,15 @@ static void RefreshHud(int mode) {
 
 static void PumpHud() {
     if (!g_hudWindow) return;
+    if (!QolGameInForeground()) { QolHudGuardVisibility(g_hudWindow); return; }  // v1.6: 失焦守卫兜底（alpha 渐隐）后 pump 静默
     MSG msg = {};
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+    while (PeekMessageW(&msg, g_hudWindow, 0, 0, PM_REMOVE)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
     // 5秒后自动隐藏
     if (IsWindowVisible(g_hudWindow) && g_hudHideAt != 0 && GetTickCount64() >= g_hudHideAt) {
+        QolHudMarkHiddenByMod(g_hudWindow);  // MOD 主动隐藏：清守卫标记
         ShowWindow(g_hudWindow, SW_HIDE);
         g_hudHideAt = 0;
     }
@@ -1890,7 +2428,7 @@ static void PollModeSwitch() {
 
     if (pressed && G::rangeSowingReady) {
         int oldMode = G::rangeSowingMode.load(std::memory_order_relaxed);
-        int newMode = (oldMode + 1) % 4;  // 0(1x1) -> 1(3x3) -> 2(5x5) -> 3(连通) -> 0
+        int newMode = (oldMode + 1) % 3;  // 0(1x1) -> 1(3x3) -> 2(5x5) -> 0（v1.3.41 连通档 3 下线：v1.20 连通 Flood-Fill 实测 filled=0 不工作）
         G::rangeSowingMode.store(newMode, std::memory_order_relaxed);
         Log("[Sower] 模式切换: %s -> %s", ModeName(oldMode), ModeName(newMode));
         RefreshHud(newMode);
@@ -1902,8 +2440,42 @@ static void PollModeSwitch() {
 // ============================================================
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("sower");
-    if (!SelfVerifyInit("sower")) return;
     Log("[Sower] mod_init 开始");
+    HotConfig_Register("sower", (void*)&RVA_SOWING_UPDATE, "RVA_SOWING_UPDATE", HOT_RVA, 0x24ACE0);
+    HotConfig_Register("sower", (void*)&RVA_SOWING_PHASE0_UPDATE, "RVA_SOWING_PHASE0_UPDATE", HOT_RVA, 0x24ACA0);
+    HotConfig_Register("sower", (void*)&RVA_STATE_MANAGER_LOOKUP, "RVA_STATE_MANAGER_LOOKUP", HOT_RVA, 0x1CA5D0);
+    HotConfig_Register("sower", (void*)&RVA_SOW_SELECT_TARGET, "RVA_SOW_SELECT_TARGET", HOT_RVA, 0x212020);
+    HotConfig_Register("sower", (void*)&RVA_SOW_VALIDATE_LAND, "RVA_SOW_VALIDATE_LAND", HOT_RVA, 0x1E1310);
+    HotConfig_Register("sower", (void*)&RVA_SOW_REFRESH_LAND, "RVA_SOW_REFRESH_LAND", HOT_RVA, 0x212110);
+    HotConfig_Register("sower", (void*)&RVA_SOW_VALIDATE_STATE, "RVA_SOW_VALIDATE_STATE", HOT_RVA, 0x24B0B0);
+    HotConfig_Register("sower", (void*)&RVA_SOW_SETTLE, "RVA_SOW_SETTLE", HOT_RVA, 0x24B460);
+    HotConfig_Register("sower", (void*)&RVA_SOW_SEED_ITEM_LOOKUP, "RVA_SOW_SEED_ITEM_LOOKUP", HOT_RVA, 0x17C840);
+    HotConfig_Register("sower", (void*)&RVA_SOW_SEED_ITEM_CHECK, "RVA_SOW_SEED_ITEM_CHECK", HOT_RVA, 0x75F630);
+    HotConfig_Register("sower", (void*)&RVA_GAME_SINGLETON_PTR, "RVA_GAME_SINGLETON_PTR", HOT_RVA, 0x10FCBB0);
+    HotConfig_Register("sower", (void*)&RVA_SOW_WORLD_TO_KEY, "RVA_SOW_WORLD_TO_KEY", HOT_RVA, 0x16D460);
+    HotConfig_Register("sower", (void*)&RVA_SOW_KEY_TO_WORLD, "RVA_SOW_KEY_TO_WORLD", HOT_RVA, 0x16D540);
+    HotConfig_Register("sower", (void*)&SAVE_DATA_POINTER_OFFSET, "SAVE_DATA_POINTER_OFFSET", HOT_RVA, 0x208);
+    HotConfig_Register("sower", (void*)&SAVE_INVENTORY_UNLOCK_FLAGS_OFFSET, "SAVE_INVENTORY_UNLOCK_FLAGS_OFFSET", HOT_RVA, 0x388);
+    HotConfig_Register("sower", (void*)&SAVE_SKIP_ITEM_DEDUCTION_OFFSET, "SAVE_SKIP_ITEM_DEDUCTION_OFFSET", HOT_RVA, 0x340C);
+    HotConfig_Register("sower", (void*)&SAVE_INVENTORY_SLOTS_OFFSET, "SAVE_INVENTORY_SLOTS_OFFSET", HOT_RVA, 0x32C0);
+    HotConfig_Register("sower", (void*)&SAVE_SELECTED_ITEM_INDEX_OFFSET, "SAVE_SELECTED_ITEM_INDEX_OFFSET", HOT_RVA, 0x33B0);
+    HotConfig_Register("sower", (void*)&SOWING_STATE_PHASE_OFFSET, "SOWING_STATE_PHASE_OFFSET", HOT_RVA, 0x1D8);
+    HotConfig_Register("sower", (void*)&SOWING_STATE_NEXT_PHASE_OFFSET, "SOWING_STATE_NEXT_PHASE_OFFSET", HOT_RVA, 0x1DC);
+    HotConfig_Register("sower", (void*)&SOWING_STATE_TARGET_OFFSET, "SOWING_STATE_TARGET_OFFSET", HOT_RVA, 0x240);
+    HotConfig_Register("sower", (void*)&SOWING_STATE_QUERY_OFFSET, "SOWING_STATE_QUERY_OFFSET", HOT_RVA, 0x248);
+    HotConfig_Register("sower", (void*)&SOWING_STATE_LAND_OFFSET, "SOWING_STATE_LAND_OFFSET", HOT_RVA, 0x268);
+    HotConfig_Register("sower", (void*)&SOWING_STATE_SELECTED_KEY_OFFSET, "SOWING_STATE_SELECTED_KEY_OFFSET", HOT_RVA, 0x270);
+    HotConfig_Register("sower", (void*)&SOWING_STATE_COUNT_OFFSET, "SOWING_STATE_COUNT_OFFSET", HOT_RVA, 0x278);
+    HotConfig_Register("sower", (void*)&SOWING_STATE_VALIDATED_OFFSET, "SOWING_STATE_VALIDATED_OFFSET", HOT_RVA, 0x27C);
+    HotConfig_Register("sower", (void*)&SOWING_STATE_RUNNER_OFFSET, "SOWING_STATE_RUNNER_OFFSET", HOT_RVA, 0x238);
+    HotConfig_Register("sower", (void*)&UNIT_POSITION_OFFSET, "UNIT_POSITION_OFFSET", HOT_RVA, 0x230);
+    HotConfig_Register("sower", (void*)&SOWING_MANAGER_TARGET_OFFSET, "SOWING_MANAGER_TARGET_OFFSET", HOT_RVA, 0x460);
+    HotConfig_Register("sower", (void*)&ITEM_DATA_HOLDER_OFFSET, "ITEM_DATA_HOLDER_OFFSET", HOT_RVA, 0x240);
+    HotConfig_Register("sower", (void*)&ITEM_STACK_COUNT_OFFSET, "ITEM_STACK_COUNT_OFFSET", HOT_RVA, 0x260);
+    HotConfig_Register("sower", (void*)&MANAGER_MAPINFO_OFFSET, "MANAGER_MAPINFO_OFFSET", HOT_RVA, 0x310);
+    HotConfig_Poll();
+    HotConfig_DumpCE("sower");
+    s_sowerBudgetSlot = qol::budget::Slot("Sower");  // v1.3.19: P0 探针注册
 
     // 防重复加载检测
     if (IsDuplicateInstance()) {
@@ -1938,10 +2510,22 @@ extern "C" __declspec(dllexport) void mod_init(void) {
 
 extern "C" __declspec(dllexport) void mod_tick(void) {
     if (!G::ready) return;
+    // v1.3.40-diag: mod_tick 心跳（10s 限频，证明宿主每帧调用）
+    static ULONGLONG s_lastTickLog = 0;
+    ULONGLONG nowT = GetTickCount64();
+    if (nowT - s_lastTickLog >= 10000) {
+        s_lastTickLog = nowT;
+        Log("[Sower] [tick] alive queue=%d\n", (int)g_sowingResumeQueue.active);
+    }
+    const uint64_t budgetT0 = qol::budget::NowUs();
+    HotConfig_Poll();
     QolHotkeyCheckReload(&g_hotkeys);
     PollModeSwitch();
     RangeSowingResumePump();
     PumpHud();
+    QolHudGuardVisibility(g_hudWindow);  // v1.3.26: 失焦隐藏 HUD（不飘桌面）
+    qol::budget::Report(s_sowerBudgetSlot,
+                        qol::budget::NowUs() - budgetT0);  // v1.3.19: P0 自报
 }
 
 extern "C" __declspec(dllexport) void unload(void) {

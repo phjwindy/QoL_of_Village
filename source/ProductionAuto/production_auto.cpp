@@ -20,7 +20,7 @@ using u32 = std::uint32_t;
 // ============================================================
 #include "logging.h"
 #include "memory_cache.h"  // v1.1.27: FastRegion 区域缓存
-#include "selfverify.h"
+#include "hotkey.h"        // 统一热键机制（HUD 切换键）
 
 // ProductionAuto 日志开关：发布版关闭日志
 // v1.1.28b-diag: 临时开启排查链式失效（v1.1.29 已修复，关闭）
@@ -742,7 +742,6 @@ static void ProductionHudRefresh();
 
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("productionauto");
-    if (!SelfVerifyInit("productionauto")) return;
     Log("[ProductionAuto] mod_init loaded, build %s %s\n",
         SUPPORTED_BUILD_NUMBER, SUPPORTED_GAME_VERSION);
 
@@ -770,6 +769,10 @@ extern "C" __declspec(dllexport) void mod_init(void) {
     Log("[ProductionAuto] InstallProductionAutomation = %s\n",
         productionReady ? "OK" : "FAILED");
 
+    // 初始化 HUD 切换热键（从 qol_hotkeys.txt 读取 productionauto 行，默认 F5）
+    QolHotKeysInit(&g_productionHudHotkeys, "productionauto");
+    QolRegisterHotKey("productionauto", "F5");
+    Log("[ProductionAuto] HUD hotkey registered (productionauto)\n");
 }
 
 extern "C" __declspec(dllexport) void mod_tick(void) {

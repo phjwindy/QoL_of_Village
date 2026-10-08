@@ -1,5 +1,9 @@
-// chestsort.cpp —— 箱子快速归类 (v1.3.5)
+// chestsort.cpp —— 箱子快速归类 (v1.4.3 正式版)
 //
+// v1.4.2-diag: H9 修复——5 处 itemAdjust 调用改为 SafeItemAdjust SEH 包装（防崩溃）；
+//              D3 修复——回滚 itemAdjust 失败时记录日志+设置 rollbackFailed 标志。
+// v1.4.0-diag: v1.20 适配——6 个 EXPECTED_PROLOGUE 签名数组从新 exe 实读更新；
+//           6 个 RVA 常量更新至 v1.20 映射；回调 vtable 交叉验证通过。
 // v1.3.5: 移除 Level 3 CAS 直写箱槽——用户反馈箱内物品消失/分堆异常，
 //         根因是 CAS 直写绕过游戏原生物品管理，游戏不认 CAS 写入的物品。
 //         回归 README 承诺：只往已有同类堆叠叠加，不创建新槽位。
@@ -66,13 +70,15 @@
 // 改用 HID 直读方案：SetupAPI 枚举 + ReadFile 读输入报告
 
 #include "logging.h"
+#include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
+#include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
+#include "hot_config.h"
 #include "aobscan.h"
 #include "hotkey.h"   // 共享热键运行时读取（游戏内改键链路）
-#include "selfverify.h"
 
 // 日志开关：发布版禁用日志输出（不生成 qol_chestsort.log）
 // 如需调试，取消下一行注释即可恢复日志输出
-// #define CHESTSORT_LOGGING
+// #define CHESTSORT_LOGGING   // v1.4.5 转正：日志关闭（定位时取消注释重编）
 // #define CHESTSORT_LOGGING
 #ifdef CHESTSORT_LOGGING
 #else
@@ -82,10 +88,15 @@
   #define LogClose()  ((void)0)
 #endif
 
+// [diag] 诊断日志门控（默认关）；调试时 #define DIAG_CHESTSORT 1 开启
+#ifndef DIAG_CHESTSORT
+#define DIAG_CHESTSORT 0
+#endif
+
 // ============================================================
 // 常量（build 24969282 / v1.08.1）
 // ============================================================
-static constexpr uintptr_t RVA_GAME_ROOT = 0x10D4950;  // 新 build 重定位
+static volatile uintptr_t RVA_GAME_ROOT = 0x10FCBB0;  // 新 build 重定位
 
 // ---- 手柄 D-pad Up 检测：XInput + HID + joyGetPosEx 三路混合方案 ----
 // 路径 1: XInput 独立线程（Xbox 手柄，热插拔天然支持）
@@ -105,29 +116,29 @@ static constexpr unsigned short DUALSENSE_PID = 0x0CE6;
 static constexpr size_t DUALSENSE_REPORT_SIZE = 64;
 static constexpr int DUALSENSE_DPAD_OFFSET = 8;  // buttons[0] 字节偏移
 
-static constexpr uintptr_t ROOT_PLAYER_OFFSET       = 0x208;
-static constexpr uintptr_t ROOT_MAP_OWNER_OFFSET    = 0x268;
-static constexpr uintptr_t MAP_INFO_OFFSET          = 0x0d8;
-static constexpr uintptr_t MAP_SPATIAL_OWNER_OFFSET = 0x030;
-static constexpr uintptr_t MAP_SPATIAL_INDEX_OFFSET = 0x6e0;
+static volatile uintptr_t ROOT_PLAYER_OFFSET = 0x208;
+static volatile uintptr_t ROOT_MAP_OWNER_OFFSET = 0x268;
+static volatile uintptr_t MAP_INFO_OFFSET = 0x0d8;
+static volatile uintptr_t MAP_SPATIAL_OWNER_OFFSET = 0x030;
+static volatile uintptr_t MAP_SPATIAL_INDEX_OFFSET = 0x6e0;
 
-static constexpr uintptr_t PLAYER_OBJECT_STATUS_OFFSET = 0x32b8;
-static constexpr uintptr_t PLAYER_OBJECT_LINK_A_OFFSET = 0x410;
-static constexpr uintptr_t PLAYER_OBJECT_LINK_B_OFFSET = 0x008;
-static constexpr uintptr_t PLAYER_OBJECT_ID_OFFSET     = 0x028;
-static constexpr uintptr_t PLAYER_ITEMS_OFFSET         = 0x32c0;
+static volatile uintptr_t PLAYER_OBJECT_STATUS_OFFSET = 0x32b8;
+static volatile uintptr_t PLAYER_OBJECT_LINK_A_OFFSET = 0x410;
+static volatile uintptr_t PLAYER_OBJECT_LINK_B_OFFSET = 0x008;
+static volatile uintptr_t PLAYER_OBJECT_ID_OFFSET = 0x028;
+static volatile uintptr_t PLAYER_ITEMS_OFFSET = 0x32c0;
 
-static constexpr uintptr_t WORLD_OBJECT_POSITION_OFFSET = 0x230;
-static constexpr uintptr_t WORLD_OBJECT_DIRTY_OFFSET   = 0x300;
+static volatile uintptr_t WORLD_OBJECT_POSITION_OFFSET = 0x230;
+static volatile uintptr_t WORLD_OBJECT_DIRTY_OFFSET = 0x300;
 
-static constexpr uintptr_t STATUS_ITEMS_OFFSET        = 0x2b8;
-static constexpr uintptr_t ITEM_DATA_HOLDER_OFFSET    = 0x240;
-static constexpr uintptr_t ITEM_STACK_COUNT_OFFSET    = 0x260;
-static constexpr uintptr_t ITEM_RANK_OFFSET           = 0x280;
+static volatile uintptr_t STATUS_ITEMS_OFFSET = 0x2b8;
+static volatile uintptr_t ITEM_DATA_HOLDER_OFFSET = 0x240;
+static volatile uintptr_t ITEM_STACK_COUNT_OFFSET = 0x260;
+static volatile uintptr_t ITEM_RANK_OFFSET = 0x280;
 
-static constexpr uintptr_t GIMMICK_DATA_HOLDER_OFFSET  = 0x240;
-static constexpr uintptr_t GIMMICK_MODULE_NAME_OFFSET = 0x0d8;
-static constexpr uintptr_t GIMMICK_POSITION_OFFSET    = 0x0f0;
+static volatile uintptr_t GIMMICK_DATA_HOLDER_OFFSET = 0x240;
+static volatile uintptr_t GIMMICK_MODULE_NAME_OFFSET = 0x0E0;  // v1.20: 0xD8→0xE0（实测 data+0xE0 才是 moduleName）
+static volatile uintptr_t GIMMICK_POSITION_OFFSET = 0x0f0;
 
 static constexpr size_t CHEST_SLOT_COUNT = 30;
 static constexpr size_t MAX_CANDIDATES   = 64;
@@ -140,11 +151,11 @@ static constexpr float  SORT_RADIUS_SQ = SORT_RADIUS * SORT_RADIUS;
 // v1.09 (build 25094764): RTTI 链扫描确认 vtable 从 0xE17168 移至 0xE1C168
 // 旧 0xE17168 在 v1.09 下 vtable[-1] 不指向有效 COL，vtable[4]=0x4EEB0 ≠ destroy(0x18C290)
 // 新 vtable 通过 _Func_impl_no_alloc<lambda_1@MapSearchStatusInRectTemplate<CGimmickStatus>> RTTI 链定位
-static constexpr uintptr_t WORLD_OBJECT_REGISTRY_RVA     = 0x10DCA20;  // .data BSS 全局变量（v1.09 未变）
-static constexpr uintptr_t SEARCH_CALLBACK_VTABLE_RVA  = 0xE1C168;   // v1.09 RTTI 链重定位
-static constexpr uintptr_t SEARCH_CALLBACK_COPY_RVA    = 0x280E20;   // v1.09: vt[0] (旧 0x280C50)
-static constexpr uintptr_t SEARCH_CALLBACK_INVOKE_RVA  = 0x280DB0;   // v1.09: vt[2] (旧 0x280BE0)
-static constexpr uintptr_t SEARCH_CALLBACK_DESTROY_RVA = 0x18C290;   // v1.09: vt[4] (旧 0x18C210)
+static volatile uintptr_t WORLD_OBJECT_REGISTRY_RVA = 0x1104C80;  // .data BSS 全局变量（v1.09 未变）
+static volatile uintptr_t SEARCH_CALLBACK_VTABLE_RVA = 0xE3E608;   // v1.20 (build 25311578): ALL_OBJECTS vtable
+static volatile uintptr_t SEARCH_CALLBACK_COPY_RVA = 0x28E480;   // v1.09: vt[0] (旧 0x280C50)
+static volatile uintptr_t SEARCH_CALLBACK_INVOKE_RVA = 0x28E410;   // v1.09: vt[2] (旧 0x280BE0)
+static volatile uintptr_t SEARCH_CALLBACK_DESTROY_RVA = 0x1969B0;   // v1.09: vt[4] (旧 0x18C210)
 
 // ============================================================
 // AOB 签名表（从 BigL233 源码验证块摘录）
@@ -158,29 +169,29 @@ struct AOBDef {
 // （纯寄存器保存），全模块 455/5+ 匹配，AOB 无法定位。
 // 通过 RVA 关系定位（旧 build recalc=dirty+0x660, ui=dirty-0x4C200）
 // + 候选函数体特征验证（DL 读取 + 对象偏移模式），硬编码如下 RVA：
-static constexpr uintptr_t RVA_BATCH_RECALCULATE = 0x13CE10;  // v1.09(build 25094764) 重定位
-static constexpr uintptr_t RVA_BATCH_UI_REFRESH  = 0x0F1950;   // v1.09(build 25094764) 重定位
-static constexpr uintptr_t RVA_BATCH_UI_REFRESH_ALT = 0x0F1310; // v1.2.8: 背包侧 UI 刷新（[[obj+0x200]+0x30]）
+static volatile uintptr_t RVA_BATCH_RECALCULATE = 0x1470C0;  // v1.09(build 25094764) 重定位
+static volatile uintptr_t RVA_BATCH_UI_REFRESH = 0xFB170;   // v1.09(build 25094764) 重定位
+static volatile uintptr_t RVA_BATCH_UI_REFRESH_ALT = 0xFAB30; // v1.2.8: 背包侧 UI 刷新（[[obj+0x200]+0x30]）
 
 // ---- 硬编码 RVA prologue 验证常量（从 v1.09 exe 实读） ----
 // 用于 mod_init 阶段验证硬编码 RVA 仍指向正确函数，防止版本更新后地址偏移
 static const unsigned char EXPECTED_BATCH_RECALC_PROLOGUE[8] = {
-    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C  // mov [rsp+10],rbx; mov [rsp+18],rbp
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C
 };
 static const unsigned char EXPECTED_BATCH_UI_REFRESH_PROLOGUE[8] = {
-    0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74  // mov [rsp+08],rbx; mov [rsp+18],rsi
+    0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74
 };
 static const unsigned char EXPECTED_BATCH_UI_REFRESH_ALT_PROLOGUE[8] = {
-    0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74  // mov [rsp+08],rbx; mov [rsp+18],rsi
+    0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74
 };
 static const unsigned char EXPECTED_CB_COPY_PROLOGUE[8] = {
-    0x48, 0x8D, 0x05, 0x41, 0xB3, 0xB9, 0x00, 0x48  // lea rax,[rip+0xB9B341]; mov ...
+    0x48, 0x8D, 0x05, 0x81, 0x01, 0xBB, 0x00, 0x48
 };
 static const unsigned char EXPECTED_CB_INVOKE_PROLOGUE[8] = {
-    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74  // mov [rsp+10],rbx; mov [rsp+18],rsi
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74
 };
 static const unsigned char EXPECTED_CB_DESTROY_PROLOGUE[8] = {
-    0x48, 0x83, 0xEC, 0x28, 0x84, 0xD2, 0x74, 0x61  // sub rsp,28; test dl,dl; je +61
+    0x48, 0x83, 0xEC, 0x28, 0x84, 0xD2, 0x74, 0x61
 };
 
 static const AOBDef kAOBs[] = {
@@ -610,20 +621,65 @@ static bool DoSpatialSearch(void* spatialIndex, const Rect* bounds, uint64_t fil
 //   status+0x240 → holder → holder+0 → data → data+0xd8 → moduleName
 static bool IsChestStatus(void* status) {
     if (!status) return false;
+    // [diag] 记录每个环节失败原因，仅打印前 12 条，避免刷屏
+    static int s_diagLogged = 0;
+    const bool diag = (s_diagLogged < 12);
+    auto Diag = [&](const char* reason) {
+        if (diag) {
+            ++s_diagLogged;
+#if DIAG_CHESTSORT
+            Log("[ChestSort][diag-ischest] status=%p REJECT: %s", status, reason);
+#endif
+        }
+    };
+    // 记录对象 vtable 前两个槽，帮助判断对象类型（CGimmickStatus 预期）
+    if (diag) {
+        uintptr_t vt0 = 0, vt16 = 0;
+        if (IsReadable(status, 0x18)) {
+            vt0 = *(const uintptr_t*)status;
+            vt16 = *(const uintptr_t*)((uintptr_t)status + 0x10);
+        }
+#if DIAG_CHESTSORT
+        Log("[ChestSort][diag-ischest] status=%p vtable0=0x%llX vtable+0x10=0x%llX",
+            status, (unsigned long long)vt0, (unsigned long long)vt16);
+#endif
+    }
     void* holder = nullptr;
-    if (!ReadPtr(status, GIMMICK_DATA_HOLDER_OFFSET, &holder)) return false;
+    if (!ReadPtr(status, GIMMICK_DATA_HOLDER_OFFSET, &holder)) {
+        Diag("status+0x240 holder 读取失败");
+        return false;
+    }
     void* data = nullptr;
-    if (!ReadPtr(holder, 0, &data)) return false;  // 权威实现有 data 层，之前漏了
+    if (!ReadPtr(holder, 0, &data)) {
+        Diag("holder+0 data 读取失败");
+        return false;
+    }
     void* moduleNamePtr = nullptr;
-    if (!ReadPtr(data, GIMMICK_MODULE_NAME_OFFSET, &moduleNamePtr)) return false;
-    if (!IsReadable(moduleNamePtr, 64)) return false;
+    if (!ReadPtr(data, GIMMICK_MODULE_NAME_OFFSET, &moduleNamePtr)) {
+        Diag("data+0xD8 moduleName 指针读取失败");
+        return false;
+    }
+    if (!IsReadable(moduleNamePtr, 64)) {
+        Diag("moduleName 内存不可读");
+        return false;
+    }
     // 有界读取 + 终止符校验（与 BigL233 权威实现一致，避免 strcmp 越界）
     char buf[64];
     size_t len = 0;
     while (len + 1 < sizeof(buf) && ((const char*)moduleNamePtr)[len] != '\0') ++len;
-    if (((const char*)moduleNamePtr)[len] != '\0') return false;  // 64 字节内未终止，拒绝
+    if (((const char*)moduleNamePtr)[len] != '\0') {
+        Diag("moduleName 64字节内未终止");
+        return false;
+    }
     memcpy(buf, moduleNamePtr, len + 1);
-    return strcmp(buf, "gimmick_chest") == 0;
+    if (strcmp(buf, "gimmick_chest") != 0) {
+        Diag("moduleName 不匹配");
+#if DIAG_CHESTSORT
+        if (diag) Log("[ChestSort][diag-ischest]   moduleName='%s'", buf);
+#endif
+        return false;
+    }
+    return true;
 }
 
 // 搜索附近箱子并填充候选列表（按距离排序）
@@ -1139,6 +1195,21 @@ static bool CheckDpadUpPressed() {
 }
 
 // ============================================================
+// H9/D3: itemAdjust SEH 安全包装
+// 所有 G::itemAdjust 调用改为 SafeItemAdjust，防止原生函数异常导致崩溃。
+// 回滚路径返回 false 时记录日志并设置 rollbackFailed 标志。
+// ============================================================
+__declspec(noinline) static bool SafeItemAdjust(void* item, int delta) {
+    if (!item || !G::itemAdjust) return false;
+    __try {
+        G::itemAdjust(item, delta);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// ============================================================
 // 主归类逻辑
 // ============================================================
 static void DoSort(WorldContext* ctx) {
@@ -1209,6 +1280,7 @@ static void DoSort(WorldContext* ctx) {
     size_t slotCount = (size_t)capacity;
     size_t movedStacks = 0;
     size_t movedItems = 0;
+    bool rollbackFailed = false;  // D3: 回滚失败标志
 
     for (size_t i = 0; i < slotCount; ++i) {
         void* item = slots[i];
@@ -1248,8 +1320,10 @@ static void DoSort(WorldContext* ctx) {
                     // [diag] 排查"杂草不堆叠"：同 itemId 但 rank 不同
                     if (!diagLoggedRank && cc.items[s].itemId == info.itemId) {
                         diagLoggedRank = true;
+#if DIAG_CHESTSORT
                         Log("[ChestSort] [diag] 同ID异rank: itemId=%llu 背包rank=%d 箱内rank=%d",
                             (unsigned long long)info.itemId, info.rank, cc.items[s].rank);
+#endif
                     }
                     continue;
                 }
@@ -1276,19 +1350,57 @@ static void DoSort(WorldContext* ctx) {
 
                 int moveCount = (remaining < space) ? remaining : space;
 
-                G::itemAdjust(targetItem, moveCount);
+                // H9: forward itemAdjust — SafeItemAdjust SEH 包装
+                if (!SafeItemAdjust(targetItem, moveCount)) {
+                    Log("[ChestSort] forward itemAdjust failed: item=%p delta=%d (target)",
+                        targetItem, moveCount);
+                    continue;
+                }
                 int targetAfter = 0;
                 if (!ReadStackCount(targetItem, &targetAfter) ||
                     targetAfter != targetBefore + moveCount) {
-                    G::itemAdjust(targetItem, -moveCount);
+                    // D3: rollback 失败时记录日志+设置标志
+                    if (!SafeItemAdjust(targetItem, -moveCount)) {
+                        int curCount = -1;
+                        ReadStackCount(targetItem, &curCount);
+                        Log("[ChestSort] rollback itemAdjust failed: item=%p delta=%d currentCount=%d",
+                            targetItem, -moveCount, curCount);
+                        rollbackFailed = true;
+                    }
                     continue;
                 }
-                G::itemAdjust(item, -moveCount);
+                // H9: forward itemAdjust — SafeItemAdjust SEH 包装
+                if (!SafeItemAdjust(item, -moveCount)) {
+                    Log("[ChestSort] forward itemAdjust failed: item=%p delta=%d (source)",
+                        item, -moveCount);
+                    // 回滚已添加到 target 的数量
+                    if (!SafeItemAdjust(targetItem, -moveCount)) {
+                        int curCount = -1;
+                        ReadStackCount(targetItem, &curCount);
+                        Log("[ChestSort] rollback itemAdjust failed: item=%p delta=%d currentCount=%d",
+                            targetItem, -moveCount, curCount);
+                        rollbackFailed = true;
+                    }
+                    continue;
+                }
                 int sourceAfter = 0;
                 if (!ReadStackCount(item, &sourceAfter) ||
                     sourceAfter != remaining - moveCount) {
-                    G::itemAdjust(targetItem, -moveCount);
-                    G::itemAdjust(item, moveCount);
+                    // D3: rollback 失败时记录日志+设置标志
+                    if (!SafeItemAdjust(targetItem, -moveCount)) {
+                        int curCount = -1;
+                        ReadStackCount(targetItem, &curCount);
+                        Log("[ChestSort] rollback itemAdjust failed: item=%p delta=%d currentCount=%d",
+                            targetItem, -moveCount, curCount);
+                        rollbackFailed = true;
+                    }
+                    if (!SafeItemAdjust(item, moveCount)) {
+                        int curCount = -1;
+                        ReadStackCount(item, &curCount);
+                        Log("[ChestSort] rollback itemAdjust failed: item=%p delta=%d currentCount=%d",
+                            item, moveCount, curCount);
+                        rollbackFailed = true;
+                    }
                     continue;
                 }
 
@@ -1392,49 +1504,100 @@ static void DoSort(WorldContext* ctx) {
         }
     }
 
+    // D3: 回滚失败汇总
+    if (rollbackFailed) {
+        Log("[ChestSort] [WARNING] rollbackFailed=true: 本次归类有回滚操作失败，可能存在物品数量不一致");
+    }
+
     // 收尾三件套
     // v1.2.6: 转移后必须失效工作缓存——箱内物品数量/槽位已变，下次按键必须重建快照
     // v1.2.7: batch_dirty AOB 修复（BTR→BTS），加诊断日志
     if (movedStacks > 0) {
         G::workCacheValid = false;
         G::workCacheMoved = true;
+#if DIAG_CHESTSORT
         Log("[ChestSort][diag-v127] 收尾开始: movedStacks=%d movedItems=%d batchDirty=0x%p",
             (int)movedStacks, (int)movedItems, (void*)G::batchDirty);
+#endif
         if (G::batchRecalc) {
             __try { G::batchRecalc(ctx->player, false);
+#if DIAG_CHESTSORT
             Log("[ChestSort][diag-v127] batchRecalc OK");
+#endif
             } __except (EXCEPTION_EXECUTE_HANDLER) {
                 Log("[ChestSort] batchRecalc 异常 0x%X", GetExceptionCode());
             }
         } else {
+#if DIAG_CHESTSORT
             Log("[ChestSort][diag-v127] batchRecalc NULL, 跳过");
+#endif
         }
         if (G::batchUIRefresh) {
             __try { G::batchUIRefresh(ctx->player, true);
+#if DIAG_CHESTSORT
             Log("[ChestSort][diag-v128] batchUIRefresh OK (箱子侧)");
+#endif
             } __except (EXCEPTION_EXECUTE_HANDLER) {
+#if DIAG_CHESTSORT
                 Log("[ChestSort][diag-v128] batchUIRefresh 异常 0x%X", GetExceptionCode());
+#endif
             }
         } else {
+#if DIAG_CHESTSORT
             Log("[ChestSort][diag-v128] batchUIRefresh NULL, 跳过");
+#endif
         }
         // v1.2.8: 追加调用背包侧 UI 刷新（0xF1310 访问 [[obj+0x200]+0x30]）
+        // v1.4.2-diag: 加背包对象链诊断——v1.20 下 UI 刷新疑似失效（[[player+0x200]+0x30] 结构漂移）
         {
+            __try {
+                const uintptr_t pp = reinterpret_cast<uintptr_t>(ctx->player);
+                void* v200 = nullptr;
+                void* v30 = nullptr;
+                if (IsReadable(reinterpret_cast<void*>(pp), 0x208)) {
+                    v200 = *reinterpret_cast<void**>(pp + 0x200);
+                }
+                if (v200 && IsReadable(v200, 0x38)) {
+                    v30 = *reinterpret_cast<void**>(
+                        reinterpret_cast<uintptr_t>(v200) + 0x30);
+                }
+#if DIAG_CHESTSORT
+                Log("[ChestSort][diag-ui] player=%p +0x200=%p +0x30=%p "
+                    "(readable200=%d readable30=%d)",
+                    reinterpret_cast<void*>(pp), v200, v30,
+                    IsReadable(reinterpret_cast<void*>(pp), 0x208) ? 1 : 0,
+                    (v200 && IsReadable(v200, 0x38)) ? 1 : 0);
+#endif
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+#if DIAG_CHESTSORT
+                Log("[ChestSort][diag-ui] 背包链读取异常");
+#endif
+            }
             auto fnAlt = (FnBatchUIRefresh)(G::base + RVA_BATCH_UI_REFRESH_ALT);
             __try { fnAlt(ctx->player, true);
+#if DIAG_CHESTSORT
             Log("[ChestSort][diag-v128] batchUIRefresh-alt OK (背包侧)");
+#endif
             } __except (EXCEPTION_EXECUTE_HANDLER) {
+#if DIAG_CHESTSORT
                 Log("[ChestSort][diag-v128] batchUIRefresh-alt 异常 0x%X", GetExceptionCode());
+#endif
             }
         }
         if (G::batchDirty) {
             __try { G::batchDirty(ctx->player, 0x2bc);
+#if DIAG_CHESTSORT
             Log("[ChestSort][diag-v127] batchDirty OK (BTS=设置脏标记)");
+#endif
             } __except (EXCEPTION_EXECUTE_HANDLER) {
+#if DIAG_CHESTSORT
                 Log("[ChestSort][diag-v127] batchDirty 异常 0x%X", GetExceptionCode());
+#endif
             }
         } else {
+#if DIAG_CHESTSORT
             Log("[ChestSort][diag-v127] batchDirty NULL, 跳过");
+#endif
         }
         Log("[ChestSort] 完成: 转移 %d 堆, %d 个物品", (int)movedStacks, (int)movedItems);
     } else {
@@ -1503,8 +1666,39 @@ static void PollInput() {
 // ============================================================
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("chestsort");
-    if (!SelfVerifyInit("chestsort")) return;
     Log("[ChestSort] mod_init 开始");
+
+    // ---- HotConfig 热调参注册 ----
+    HotConfig_Register("chestsort", (void*)&RVA_GAME_ROOT, "RVA_GAME_ROOT", HOT_RVA, 0x10FCBB0);
+    HotConfig_Register("chestsort", (void*)&ROOT_PLAYER_OFFSET, "ROOT_PLAYER_OFFSET", HOT_RVA, 0x208);
+    HotConfig_Register("chestsort", (void*)&ROOT_MAP_OWNER_OFFSET, "ROOT_MAP_OWNER_OFFSET", HOT_RVA, 0x268);
+    HotConfig_Register("chestsort", (void*)&MAP_INFO_OFFSET, "MAP_INFO_OFFSET", HOT_RVA, 0x0d8);
+    HotConfig_Register("chestsort", (void*)&MAP_SPATIAL_OWNER_OFFSET, "MAP_SPATIAL_OWNER_OFFSET", HOT_RVA, 0x030);
+    HotConfig_Register("chestsort", (void*)&MAP_SPATIAL_INDEX_OFFSET, "MAP_SPATIAL_INDEX_OFFSET", HOT_RVA, 0x6e0);
+    HotConfig_Register("chestsort", (void*)&PLAYER_OBJECT_STATUS_OFFSET, "PLAYER_OBJECT_STATUS_OFFSET", HOT_RVA, 0x32b8);
+    HotConfig_Register("chestsort", (void*)&PLAYER_OBJECT_LINK_A_OFFSET, "PLAYER_OBJECT_LINK_A_OFFSET", HOT_RVA, 0x410);
+    HotConfig_Register("chestsort", (void*)&PLAYER_OBJECT_LINK_B_OFFSET, "PLAYER_OBJECT_LINK_B_OFFSET", HOT_RVA, 0x008);
+    HotConfig_Register("chestsort", (void*)&PLAYER_OBJECT_ID_OFFSET, "PLAYER_OBJECT_ID_OFFSET", HOT_RVA, 0x028);
+    HotConfig_Register("chestsort", (void*)&PLAYER_ITEMS_OFFSET, "PLAYER_ITEMS_OFFSET", HOT_RVA, 0x32c0);
+    HotConfig_Register("chestsort", (void*)&WORLD_OBJECT_POSITION_OFFSET, "WORLD_OBJECT_POSITION_OFFSET", HOT_RVA, 0x230);
+    HotConfig_Register("chestsort", (void*)&WORLD_OBJECT_DIRTY_OFFSET, "WORLD_OBJECT_DIRTY_OFFSET", HOT_RVA, 0x300);
+    HotConfig_Register("chestsort", (void*)&STATUS_ITEMS_OFFSET, "STATUS_ITEMS_OFFSET", HOT_RVA, 0x2b8);
+    HotConfig_Register("chestsort", (void*)&ITEM_DATA_HOLDER_OFFSET, "ITEM_DATA_HOLDER_OFFSET", HOT_RVA, 0x240);
+    HotConfig_Register("chestsort", (void*)&ITEM_STACK_COUNT_OFFSET, "ITEM_STACK_COUNT_OFFSET", HOT_RVA, 0x260);
+    HotConfig_Register("chestsort", (void*)&ITEM_RANK_OFFSET, "ITEM_RANK_OFFSET", HOT_RVA, 0x280);
+    HotConfig_Register("chestsort", (void*)&GIMMICK_DATA_HOLDER_OFFSET, "GIMMICK_DATA_HOLDER_OFFSET", HOT_RVA, 0x240);
+    HotConfig_Register("chestsort", (void*)&GIMMICK_MODULE_NAME_OFFSET, "GIMMICK_MODULE_NAME_OFFSET", HOT_RVA, 0x0E0);
+    HotConfig_Register("chestsort", (void*)&GIMMICK_POSITION_OFFSET, "GIMMICK_POSITION_OFFSET", HOT_RVA, 0x0f0);
+    HotConfig_Register("chestsort", (void*)&WORLD_OBJECT_REGISTRY_RVA, "WORLD_OBJECT_REGISTRY_RVA", HOT_RVA, 0x1104C80);
+    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_VTABLE_RVA, "SEARCH_CALLBACK_VTABLE_RVA", HOT_RVA, 0xE3E608);
+    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_COPY_RVA, "SEARCH_CALLBACK_COPY_RVA", HOT_RVA, 0x28E480);
+    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_INVOKE_RVA, "SEARCH_CALLBACK_INVOKE_RVA", HOT_RVA, 0x28E410);
+    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_DESTROY_RVA, "SEARCH_CALLBACK_DESTROY_RVA", HOT_RVA, 0x1969B0);
+    HotConfig_Register("chestsort", (void*)&RVA_BATCH_RECALCULATE, "RVA_BATCH_RECALCULATE", HOT_RVA, 0x1470C0);
+    HotConfig_Register("chestsort", (void*)&RVA_BATCH_UI_REFRESH, "RVA_BATCH_UI_REFRESH", HOT_RVA, 0xFB170);
+    HotConfig_Register("chestsort", (void*)&RVA_BATCH_UI_REFRESH_ALT, "RVA_BATCH_UI_REFRESH_ALT", HOT_RVA, 0xFAB30);
+    HotConfig_Poll();
+    HotConfig_DumpCE("chestsort");
 
     // 共享热键初始化：读 qol_hotkeys.txt 中 chestsort 行的键盘键。
     QolHotKeysInit(&g_hotkeys, "chestsort");
@@ -1619,7 +1813,7 @@ extern "C" __declspec(dllexport) void mod_init(void) {
     // vtable 直接使用硬编码 RVA（v1.09 build 25094764 通过 RTTI 链扫描验证）。
     // 不再运行时扫描 .rdata——遍历 439 万个槽位耗时 16 秒会冻结游戏。
     G::rvaCallbackVTable = SEARCH_CALLBACK_VTABLE_RVA;
-    Log("[ChestSort] [vtable] 硬编码 RVA=0x%X (build 25094764, RTTI 已验证, 跳过 .rdata 扫描)",
+    Log("[ChestSort] [vtable] 硬编码 RVA=0x%X (build 25311578, v1.20 vtable 已验证)",
         (unsigned)G::rvaCallbackVTable);
 
     // ---- 手柄初始化 (XInput + HID + joyGetPosEx 三路混合) ----
@@ -1634,12 +1828,21 @@ extern "C" __declspec(dllexport) void mod_init(void) {
 }
 
 extern "C" __declspec(dllexport) void mod_tick(void) {
+    qol::budget::BeginFrame();  // P0: 帧锚定（幂等，多 DLL 安全）
+    static int s_bdgSlot = -1;  // P0 探针（惰性注册，析构自动上报）
+    if (s_bdgSlot < 0) s_bdgSlot = qol::budget::Slot("ChestSort");
+    struct BdgGuard {
+        int slot; uint64_t t0;
+        ~BdgGuard() { qol::budget::Report(slot, qol::budget::NowUs() - t0); }
+    } bdgGuard = { s_bdgSlot, qol::budget::NowUs() };
+
     if (!G::ready) return;
+    HotConfig_Poll();
 
     // v1.2.3: 注册表预热 — 游戏启动后首帧自动发起一次空间搜索，
     // 让分片扫描在玩家走路时后台完成。首次按键时注册表已就绪，
     // 跳过 DoSort 中的 while(scanPending) 同步循环，消除 ~500ms 卡顿。
-    if (!G::initialScanDone && !G::scanPending && !G::registryValid) {
+    if (!G::initialScanDone && !G::scanPending && !G::registryValid && !QolGameBusy()) {
         WorldContext ctx = {};
         if (GetWorldContext(&ctx)) {
             G::initialScanDone = true;
@@ -1649,7 +1852,7 @@ extern "C" __declspec(dllexport) void mod_tick(void) {
     }
 
     // 分片处理注册表扫描（每帧最多 64 条=SCAN_CHUNK，玩家无感）
-    if (G::scanPending) {
+    if (G::scanPending && !QolGameBusy()) {
         ProcessRegistryChunk();
     }
     PollInput();

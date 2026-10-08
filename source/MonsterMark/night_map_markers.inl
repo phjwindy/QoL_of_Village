@@ -10,89 +10,89 @@
 // never synthetic markers.  No stamp is appended, serialized, or written to a
 // save file.
 
-static constexpr uintptr_t RVA_NIGHT_MAP_REDRAW = 0x2E5540;
-static constexpr uintptr_t RVA_NIGHT_MAP_INITIALIZER_CALL = 0x2E1754;
-static constexpr uintptr_t RVA_NIGHT_MAP_VECTOR_READ = 0x2E55AC;
-static constexpr uintptr_t RVA_NIGHT_MAP_VECTOR_RANGE_LOAD = 0x2E55BA;
-static constexpr uintptr_t RVA_NIGHT_MAP_TASK_VTABLE = 0xE20708;
-static constexpr uintptr_t RVA_NIGHT_MAP_TASK_COL = 0xEBA658;
-static constexpr uintptr_t RVA_NIGHT_MAP_TASK_TYPE = 0x106E1E8;
-static constexpr uintptr_t RVA_NIGHT_MAP_TASK_INITIALIZE = 0x773940;
-static constexpr uintptr_t RVA_NIGHT_MAP_STAMP_VTABLE = 0xE07F50;
-static constexpr uintptr_t RVA_NIGHT_MAP_STAMP_COL = 0xE93668;
-static constexpr uintptr_t RVA_NIGHT_MAP_STAMP_TYPE = 0x104A460;
-static constexpr uintptr_t RVA_NIGHT_MAP_STAMP_DESTROY = 0x111510;
+static volatile uintptr_t RVA_NIGHT_MAP_REDRAW = 0x2F52F0;
+static volatile uintptr_t RVA_NIGHT_MAP_INITIALIZER_CALL = 0x2F14F5;
+static volatile uintptr_t RVA_NIGHT_MAP_VECTOR_READ = 0x2F535C;
+static volatile uintptr_t RVA_NIGHT_MAP_VECTOR_RANGE_LOAD = 0x2F536A;
+static volatile uintptr_t RVA_NIGHT_MAP_TASK_VTABLE = 0xE42D38;
+static volatile uintptr_t RVA_NIGHT_MAP_TASK_COL = 0xEDDB88;
+static volatile uintptr_t RVA_NIGHT_MAP_TASK_TYPE = 0x1095748;
+static volatile uintptr_t RVA_NIGHT_MAP_TASK_INITIALIZE = 0x2FE900;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_VTABLE = 0xE2A368;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_COL = 0xEB67B0;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_TYPE = 0x1071260;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_DESTROY = 0x11B710;
 
-static constexpr uintptr_t RVA_NIGHT_CREATURE_VTABLE = 0xE056B8;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_COL = 0xE8E638;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_TYPE = 0x10467A0;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_DESTROY = 0xE3324;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_CALLBACK_VTABLE = 0xE1C248;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_CALLBACK_COL = 0xEB27F0;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_CALLBACK_COPY = 0x280E60;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_CALLBACK_INVOKE = 0x280E50;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_CALLBACK_DESTROY = 0x18C290;
-static constexpr uintptr_t RVA_NIGHT_MAP_INFORMATION_VTABLE = 0xE131B8;
-static constexpr uintptr_t RVA_NIGHT_MAP_INFORMATION_COL = 0xEA51D8;
-static constexpr uintptr_t RVA_NIGHT_MAP_INFORMATION_TYPE = 0x1059A90;
-static constexpr uintptr_t RVA_NIGHT_COM_MAP_VTABLE = 0xE0F180;
-static constexpr uintptr_t RVA_NIGHT_COM_MAP_COL = 0xE9F0E8;
-static constexpr uintptr_t RVA_NIGHT_COM_MAP_TYPE = 0x1055830;
-static constexpr uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_10 = 0xE0F068;
-static constexpr uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_20 = 0xE0F190;
-static constexpr uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_248 = 0xE0F078;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_CONSTRUCTOR = 0xDDD30;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_DATA_BIND = 0xDE0CE;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_ID_ACCESS = 0xDEA1C;
-static constexpr uintptr_t RVA_NIGHT_CREATURE_ID_FORMAT = 0xE05148;
-static constexpr uintptr_t RVA_NIGHT_SPATIAL_SEARCH = 0x189A10;
-static constexpr uintptr_t RVA_NIGHT_RAW_VECTOR_FREE = 0xAF690;
-static constexpr uintptr_t RVA_NIGHT_STATUS_UNIQUE_ID_GETTER = 0x10F3B0;
-static constexpr uintptr_t RVA_NIGHT_STATUS_POSITION_GETTER = 0x10F3C0;
-static constexpr uintptr_t RVA_NIGHT_MAP_AREA_RESOLVER = 0x163560;
-static constexpr uintptr_t RVA_NIGHT_MAP_AREA_RESOLVER_BOUNDS = 0x163683;
-static constexpr uintptr_t RVA_NIGHT_LIVE_AREA_RESOLVER = 0x1CB2F0;
-static constexpr uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_CHAIN = 0x168191;
-static constexpr uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_LIVE_CALL = 0x1681C6;
-static constexpr uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_CALL = 0x1681DB;
-static constexpr uintptr_t RVA_NIGHT_MAP_AREA_STATUS_CHAIN = 0xD73F4;
-static constexpr uintptr_t RVA_NIGHT_MAP_AREA_STATUS_LIVE_CALL = 0xD741B;
-static constexpr uintptr_t RVA_NIGHT_MAP_AREA_STATUS_CALL = 0xD7430;
-static constexpr uintptr_t RVA_NIGHT_WORLD_TO_MAP = 0x217F70;
-static constexpr uintptr_t RVA_NIGHT_VECTOR_ADD = 0xDDB80;
-static constexpr uintptr_t RVA_NIGHT_WORLD_TO_MAP_CALL = 0x2DA408;
-static constexpr uintptr_t RVA_NIGHT_POSITION_GETTER_CALL = 0x2DA3F2;
-static constexpr uintptr_t RVA_NIGHT_VECTOR_ADD_CALL = 0x2DA45A;
-static constexpr uintptr_t RVA_NIGHT_MAP_STAMP_POSITION_COPY = 0x2E5776;
-static constexpr uintptr_t RVA_NIGHT_MAP_STAMP_NATIVE_LIMIT = 0x2E5762;
-static constexpr uintptr_t RVA_NIGHT_MAP_STAMP_ALLOCATION = 0x2E5790;
-static constexpr uintptr_t RVA_NIGHT_MAP_STAMP_LAYOUT_WRITES = 0x2E57CF;
-static constexpr uintptr_t RVA_NIGHT_MAP_STAMP_ATLAS_TYPE = 0x2E55E4;
-static constexpr uintptr_t RVA_NIGHT_MAP_STAMP_SELECTION = 0x2E7A12;
-static constexpr uintptr_t RVA_NIGHT_STAMP_POSITION_READ = 0x2E5656;
-static constexpr uintptr_t RVA_NIGHT_STAMP_RENDER_ARGS = 0x2E569E;
-static constexpr uintptr_t RVA_NIGHT_STAMP_RENDER_CALL = 0x2E56C4;
-static constexpr uintptr_t RVA_NIGHT_STAMP_LOOP_ADVANCE = 0x2E56C9;
-static constexpr uintptr_t RVA_NIGHT_STAMP_RENDERER = 0x71F8D0;
-static constexpr uintptr_t RVA_NIGHT_RENDERER_R9_OVERWRITE = 0x71F952;
-static constexpr uintptr_t RVA_NIGHT_ENABLED_MEMBERSHIP_PROOF = 0x187122;
-static constexpr uintptr_t RVA_NIGHT_SPATIAL_OWNER_CHAIN = 0xD7022;
-static constexpr uintptr_t RVA_NIGHT_SPATIAL_OWNER_LOOKUP_CALL = 0xD703E;
-static constexpr uintptr_t RVA_NIGHT_SPATIAL_OWNER_LOOKUP = 0x183B10;
-static constexpr uintptr_t RVA_NIGHT_SPATIAL_ADMISSION_WINDOW = 0xE2E86;
-static constexpr uintptr_t RVA_NIGHT_SPATIAL_ADMISSION_CALL = 0xE2E90;
-static constexpr uintptr_t RVA_NIGHT_SPATIAL_ADMISSION = 0x1838D0;
-static constexpr uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT_WINDOW = 0x18392D;
-static constexpr uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT_CALL = 0x18393F;
-static constexpr uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT = 0x110680;
-static constexpr uintptr_t RVA_NIGHT_MEMBERSHIP_ADMISSION_CALL = 0x187172;
-static constexpr uintptr_t RVA_NIGHT_MAP_DIVISOR = 0xA085C8;
-static constexpr uintptr_t RVA_NIGHT_MAP_SCALE_ONE = 0xE6FE8C;
-static constexpr uintptr_t RVA_NIGHT_MAP_OFFSET_X = 0xE703D8;
-static constexpr uintptr_t RVA_NIGHT_MAP_OFFSET_Y = 0xE70658;
-static constexpr uintptr_t RVA_NIGHT_PLAYER_STATUS_VTABLE = 0xE093F0;
-static constexpr uintptr_t RVA_NIGHT_PLAYER_STATUS_COL = 0xE959A0;
-static constexpr uintptr_t RVA_NIGHT_PLAYER_STATUS_TYPE = 0x104C2C0;
+static volatile uintptr_t RVA_NIGHT_CREATURE_VTABLE = 0xE27AF8;
+static volatile uintptr_t RVA_NIGHT_CREATURE_COL = 0xEB1780;
+static volatile uintptr_t RVA_NIGHT_CREATURE_TYPE = 0x106D5A0;
+static volatile uintptr_t RVA_NIGHT_CREATURE_DESTROY = 0xECA14;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_VTABLE = 0xE3E5D0;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_COL = 0xED5A90;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_COPY = 0x28E4C0;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_INVOKE = 0x28E4B0;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_DESTROY = 0x1969B0;
+static volatile uintptr_t RVA_NIGHT_MAP_INFORMATION_VTABLE = 0xE354E8;
+static volatile uintptr_t RVA_NIGHT_MAP_INFORMATION_COL = 0xEC8330;
+static volatile uintptr_t RVA_NIGHT_MAP_INFORMATION_TYPE = 0x1080890;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_VTABLE = 0xE314D0;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_COL = 0xEC2228;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_TYPE = 0x107C640;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_10 = 0xE313B8;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_20 = 0xE314E0;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_248 = 0xE313C8;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CONSTRUCTOR = 0xE7400;
+static volatile uintptr_t RVA_NIGHT_CREATURE_DATA_BIND = 0xE779E;
+static volatile uintptr_t RVA_NIGHT_CREATURE_ID_ACCESS = 0xE80EC;
+static volatile uintptr_t RVA_NIGHT_CREATURE_ID_FORMAT = 0xE27588;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_SEARCH = 0x194060;
+static volatile uintptr_t RVA_NIGHT_RAW_VECTOR_FREE = 0xB8720;
+static volatile uintptr_t RVA_NIGHT_STATUS_UNIQUE_ID_GETTER = 0x119590;
+static volatile uintptr_t RVA_NIGHT_STATUS_POSITION_GETTER = 0x1195A0;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_RESOLVER = 0x16D860;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_RESOLVER_BOUNDS = 0x16D983;
+static volatile uintptr_t RVA_NIGHT_LIVE_AREA_RESOLVER = 0x1D5F00;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_CHAIN = 0x1725A1;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_LIVE_CALL = 0x1725D6;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_CALL = 0x1725EB;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_STATUS_CHAIN = 0xE09C4;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_STATUS_LIVE_CALL = 0xE09EB;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_STATUS_CALL = 0xE0A00;
+static volatile uintptr_t RVA_NIGHT_WORLD_TO_MAP = 0x223600;
+static volatile uintptr_t RVA_NIGHT_VECTOR_ADD = 0xE7250;
+static volatile uintptr_t RVA_NIGHT_WORLD_TO_MAP_CALL = 0x2E9E5B;
+static volatile uintptr_t RVA_NIGHT_POSITION_GETTER_CALL = 0x2E9E45;
+static volatile uintptr_t RVA_NIGHT_VECTOR_ADD_CALL = 0x2E9EAD;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_POSITION_COPY = 0x2F5526;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_NATIVE_LIMIT = 0x2F5512;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_ALLOCATION = 0x2F5540;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_LAYOUT_WRITES = 0x2F557F;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_ATLAS_TYPE = 0x2F5394;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_SELECTION = 0x2F77C2;
+static volatile uintptr_t RVA_NIGHT_STAMP_POSITION_READ = 0x2F5406;
+static volatile uintptr_t RVA_NIGHT_STAMP_RENDER_ARGS = 0x2F544E;
+static volatile uintptr_t RVA_NIGHT_STAMP_RENDER_CALL = 0x2F5474;
+static volatile uintptr_t RVA_NIGHT_STAMP_LOOP_ADVANCE = 0x2F5479;
+static volatile uintptr_t RVA_NIGHT_STAMP_RENDERER = 0x740C50;
+static volatile uintptr_t RVA_NIGHT_RENDERER_R9_OVERWRITE = 0x740CD2;
+static volatile uintptr_t RVA_NIGHT_ENABLED_MEMBERSHIP_PROOF = 0x1916D2;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_OWNER_CHAIN = 0xE05D3;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_OWNER_LOOKUP_CALL = 0xE05EF;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_OWNER_LOOKUP = 0x18E0C0;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_ADMISSION_WINDOW = 0xEC576;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_ADMISSION_CALL = 0xEC580;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_ADMISSION = 0x18DE80;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT_WINDOW = 0x18DEDD;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT_CALL = 0x18DEEF;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT = 0x11A880;
+static volatile uintptr_t RVA_NIGHT_MEMBERSHIP_ADMISSION_CALL = 0x191722;
+static volatile uintptr_t RVA_NIGHT_MAP_DIVISOR = 0xA2AA88;
+static volatile uintptr_t RVA_NIGHT_MAP_SCALE_ONE = 0xE92D54;
+static volatile uintptr_t RVA_NIGHT_MAP_OFFSET_X = 0xE932B0;
+static volatile uintptr_t RVA_NIGHT_MAP_OFFSET_Y = 0xE93544;
+static volatile uintptr_t RVA_NIGHT_PLAYER_STATUS_VTABLE = 0xE2B790;
+static volatile uintptr_t RVA_NIGHT_PLAYER_STATUS_COL = 0xEB8AC0;
+static volatile uintptr_t RVA_NIGHT_PLAYER_STATUS_TYPE = 0x10730C0;
 
 // --- 0x250910 (StatusSearchByBaseID) --------------------------------------
 // Searches the g_gimmickMgr hash map (RVA 0x10DCA20) for a live gimmick
@@ -112,8 +112,8 @@ static constexpr uintptr_t RVA_NIGHT_PLAYER_STATUS_TYPE = 0x104C2C0;
 //   returns rax = pointer to live gimmick status, or null if not found
 // Note: both paths (null/non-null) end with cleanup+ret; the error path
 // hits int3 but is unreachable for valid baseIDs.
-static constexpr uintptr_t RVA_NIGHT_GIMMICK_MGR = 0x10DCA20;
-static constexpr uintptr_t RVA_NIGHT_STATUS_SEARCH_BY_BASE_ID = 0x250910;
+static volatile uintptr_t RVA_NIGHT_GIMMICK_MGR = 0x1104C80;
+static volatile uintptr_t RVA_NIGHT_STATUS_SEARCH_BY_BASE_ID = 0x259300;
 static constexpr uintptr_t NIGHT_STATUS_SEARCH_SIG_LENGTH = 11;
 
 // Function type for direct call:
@@ -131,13 +131,13 @@ static NightStatusSearchByBaseIDFunc g_nightStatusSearchByBaseID = nullptr;
 //   [0x00..0x0F] float4 world coords (x, y, z, w)
 //   [0x10..0x17] void* ref (may be null)
 //   [0x20]       bool found (1 = anchor exists, 0 = not found)
-static constexpr uintptr_t RVA_NIGHT_EXACT_ANCHOR_SEARCH = 0x1C18B0;
+static volatile uintptr_t RVA_NIGHT_EXACT_ANCHOR_SEARCH = 0x1CC450;
 static constexpr size_t NIGHT_EXACT_ANCHOR_HOOK_LENGTH = 14;
 
 // 0x183B10: hash-map lookup (spatialOwner, uint64_t areaId) -> entry*.
 // (0x183B10 was the old RVA; capstone disasm of 0x2657F0 proved the real
 //  call is to 0x183B90 at 0x265903.)
-static constexpr uintptr_t RVA_NIGHT_MAP_HASH_LOOKUP = 0x183B10;
+static volatile uintptr_t RVA_NIGHT_MAP_HASH_LOOKUP = 0x18E0C0;
 
 // Flag system RVAs (collected-item filtering).
 // 0x2A1B0: save data accessor.  void* __fastcall(void* gameDB)
@@ -147,9 +147,9 @@ static constexpr uintptr_t RVA_NIGHT_MAP_HASH_LOOKUP = 0x183B10;
 //   [g_savePtr + 0x208] = flag bitmap base.
 //   Flag test: qword at [bitmap_base + (flag_idx>>6)*8 + 0x90],
 //   bit = flag_idx & 0x3F.  Set = collected.
-static constexpr uintptr_t RVA_NIGHT_SAVE_DATA_ACCESSOR = 0x2A1B0;
-static constexpr uintptr_t RVA_NIGHT_SAVE_DATA_PTR = 0x10D4950;
-static constexpr uintptr_t RVA_NIGHT_GAME_DB_PTR = 0x10DC9B0;
+static volatile uintptr_t RVA_NIGHT_SAVE_DATA_ACCESSOR = 0x27A40;
+static volatile uintptr_t RVA_NIGHT_SAVE_DATA_PTR = 0x10FCBB0;
+static volatile uintptr_t RVA_NIGHT_GAME_DB_PTR = 0x1104C10;
 
 static constexpr uintptr_t NIGHT_ROOT_MAP_OWNER_OFFSET = 0x268;
 static constexpr uintptr_t NIGHT_ROOT_MAIN_STATUS_OFFSET = 0x208;
@@ -452,7 +452,7 @@ static bool g_nightGearPlaced[NIGHT_COLLECTED_MAX] = {};
 //   [62..111] = gears,  baseID n = 499900000 + (n-1)
 static constexpr u64 NIGHT_BOOK_BASEID_FIRST = 490400000ULL;
 static constexpr u64 NIGHT_GEAR_BASEID_FIRST = 499900000ULL;
-static constexpr uintptr_t NIGHT_ALL_OBJECTS_CALLBACK_VTABLE = 0xE1C168;
+static constexpr uintptr_t NIGHT_ALL_OBJECTS_CALLBACK_VTABLE = 0xE3E608;
 
 // v1.0.10: candidate callback vtables paired with the spatial-search
 // destroy helper (RVA 0x18C290).  The v1.0.7 F7 brute-force scan proved
@@ -2234,26 +2234,89 @@ static void NightScanAnchors(void* mapInfo, u64 playerAreaId) {
     }
 }
 
-// v1.0.29: 昼夜判断——读 raw_second 判断当前是否白天
-// save = [exe + 0x10D4950], raw_second = [save + 0x3270] (int64)
-// hour = (rawSecond % 86400) / 3600, 白天 = 06:00~18:00
+// v1.0.36 fix: hour = ((rawSecond % 86400) / 3600 + 7) % 24（+7 为显示偏移，
+// raw 编码 0 点 = 游戏显示 7 点，与 TimeFreeze/SelfServiceStore 同源已实测）。
+// 原实现漏 +7：显示 7~17 点误判为夜（白天执行夜间扫描+标记注入）、
+// 显示 18~24 点误判为白天（幽灵鼠/宝箱标记在 18~24 点失效）。
+// 白天 = 06:00~18:00。
 static bool NightIsDaytime(uintptr_t exeBase) {
-    void* savePtr = *reinterpret_cast<void**>(exeBase + RVA_NIGHT_SAVE_DATA_PTR);
-    if (!savePtr) return false;  // 读不到就不过滤（放行夜间搜索）
+    // v1.0.49-diag 修复：rawSecond 读取链缺 +0x208 间接层（AutoFish 同源链为
+    // root(0x10FCBB0) -> +SAVE_DATA_OFFSET 0x208 -> saveData -> +0x3270）。
+    // 旧链把 root slot 指针直接当 saveData 用，恒读 0 -> hour=7 误判白天 ->
+    // 全天静默过滤（2026-10-06 三针日志实锤 daytime_filtered raw_second=0 hour=7）。
+    void* root = *reinterpret_cast<void**>(exeBase + RVA_NIGHT_SAVE_DATA_PTR);
+    if (!root) return false;  // 读不到就不过滤（放行夜间搜索）
+    void* savePtr = nullptr;
     int64_t rawSecond = 0;
     __try {
+        savePtr = *reinterpret_cast<void**>(
+            reinterpret_cast<unsigned char*>(root) + 0x208);  // SAVE_DATA_OFFSET
+        if (!savePtr) return false;
         rawSecond = *reinterpret_cast<int64_t*>(
             reinterpret_cast<unsigned char*>(savePtr) + 0x3270);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;  // SEH 异常时不过滤
     }
-    if (rawSecond < 0) return false;
-    int hour = static_cast<int>((rawSecond % 86400) / 3600);
+    if (rawSecond <= 0) return false;  // v1.0.49-diag: 0 值也 fail-open（旧版 0 会误判白天）
+    int hour = static_cast<int>((((rawSecond % 86400) / 3600) + 7) % 24);
     return (hour >= 6 && hour < 18);
 }
 
+#ifdef MONSTERMARK_LOGGING
+// v1.0.48-diag: 诊断读取 rawSecond/hour——独立小函数以允许 SEH
+//（detour 主函数含需栈展开的 C++ 对象，不能直接 __try，参照 NightIsDaytime 先例）
+static void NightDiagLogDaytimeFilter(u64 call) {
+    int64_t rawDiag = 0;
+    int hourDiag = -1;
+    __try {
+        const uintptr_t exeBase =
+            reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        void* rootDiag = *reinterpret_cast<void**>(
+            exeBase + RVA_NIGHT_SAVE_DATA_PTR);
+        if (rootDiag) {
+            // v1.0.49-diag: 与 NightIsDaytime 同步修链（+0x208 间接层）
+            void* savePtrDiag = *reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(rootDiag) + 0x208);
+            if (savePtrDiag) {
+                rawDiag = *reinterpret_cast<int64_t*>(
+                    reinterpret_cast<unsigned char*>(savePtrDiag) + 0x3270);
+                hourDiag = static_cast<int>(
+                    (((rawDiag % 86400) / 3600) + 7) % 24);
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        hourDiag = -2;
+    }
+    Log("[NightMapMarkers][diag] daytime_filtered call=%llu "
+        "raw_second=%lld hour=%d\n",
+        static_cast<unsigned long long>(call),
+        static_cast<long long>(rawDiag), hourDiag);
+}
+#endif  // MONSTERMARK_LOGGING
+
 static void __fastcall NightMapRedrawDetour(void* mapTask) {
     if (!g_originalNightMapRedraw) return;
+#ifdef MONSTERMARK_LOGGING
+    // v1.0.48-diag: detour 触发诊断——前 3 次必打 + 之后每 600 次打一条。
+    // 背景（2026-10-06 用户实测夜间开地图无标记且运行期零日志）：前 12 次去重
+    // 逻辑意味着零日志=detour 未被游戏调用 / 或被下方静默早退拦截，三针定位。
+    // v1.0.50 正式版随 MONSTERMARK_LOGGING 关闭（2026-10-06 用户实测通过）。
+    {
+        static u64 diagEntryCalls = 0;
+        static u64 diagEntryLastLogged = 0;
+        ++diagEntryCalls;
+        if (diagEntryCalls <= 3 ||
+            diagEntryCalls - diagEntryLastLogged >= 600) {
+            diagEntryLastLogged = diagEntryCalls;
+            Log("[NightMapMarkers][diag] detour_entered call=%llu "
+                "enabled=%d faulted=%d inside=%d\n",
+                static_cast<unsigned long long>(diagEntryCalls),
+                g_nightMapMarkersEnabled.load(std::memory_order_relaxed) ? 1 : 0,
+                g_nightMapMarkersFaulted.load(std::memory_order_relaxed) ? 1 : 0,
+                g_insideNightMapRedraw ? 1 : 0);
+        }
+    }
+#endif
     const DWORD threadId = GetCurrentThreadId();
     DWORD expectedThread = 0;
     if (!g_nightRedrawThreadId.compare_exchange_strong(
@@ -2278,6 +2341,20 @@ static void __fastcall NightMapRedrawDetour(void* mapTask) {
         const uintptr_t exeBase =
             reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
         if (NightIsDaytime(exeBase)) {
+#ifdef MONSTERMARK_LOGGING
+            // v1.0.48-diag: 白天过滤诊断——实锤昼夜判定值（防 rawSecond 偏移漂移
+            // 读到垃圾正数被误判白天而静默拦截；前 3 次+每 300 次打一条）
+            {
+                static u64 diagDayFiltered = 0;
+                static u64 diagDayLastLogged = 0;
+                ++diagDayFiltered;
+                if (diagDayFiltered <= 3 ||
+                    diagDayFiltered - diagDayLastLogged >= 300) {
+                    diagDayLastLogged = diagDayFiltered;
+                    NightDiagLogDaytimeFilter(diagDayFiltered);
+                }
+            }
+#endif
             g_originalNightMapRedraw(mapTask);
             return;
         }
@@ -2510,211 +2587,237 @@ static bool InstallNightMapMarkers() {
     if (!g_supportedExe) return false;
     const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     static const unsigned char redrawExpected[NIGHT_MAP_REDRAW_HOOK_LENGTH] = {
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
-        0x18, 0x57, 0x48, 0x81, 0xec, 0x80, 0x00, 0x00, 0x00
+        0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74,
+        0x24, 0x18, 0x57, 0x48, 0x81, 0xEC, 0x80, 0x00,
+        0x00, 0x00
     };
     static const unsigned char initializerCallExpected[5] = {
-        0xe8, 0xe7, 0x3d, 0x00, 0x00
+        0xE8, 0xF6, 0x3D, 0x00, 0x00
     };
     static const unsigned char vectorReadExpected[37] = {
-        0x48, 0x8b, 0x05, 0x9d, 0xf3, 0xde, 0x00, 0x48, 0x8b, 0x88, 0x08, 0x02,
-        0x00, 0x00, 0x48, 0x8b, 0xb1, 0xe0, 0x35, 0x00, 0x00, 0x48, 0x8b, 0x99,
-        0xd8, 0x35, 0x00, 0x00, 0x48, 0x3b, 0xde, 0x0f, 0x84, 0x05, 0x01, 0x00,
-        0x00
+        0x48, 0x8B, 0x05, 0x4D, 0x78, 0xE0, 0x00, 0x48,
+        0x8B, 0x88, 0x08, 0x02, 0x00, 0x00, 0x48, 0x8B,
+        0xB1, 0xE0, 0x35, 0x00, 0x00, 0x48, 0x8B, 0x99,
+        0xD8, 0x35, 0x00, 0x00, 0x48, 0x3B, 0xDE, 0x0F,
+        0x84, 0x05, 0x01, 0x00, 0x00
     };;
     static const unsigned char spatialExpected[14] = {
-        0x40, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
-        0x56, 0x41, 0x57, 0x48, 0x83, 0xec, 0x60
+        0x40, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+        0x41, 0x57, 0x48, 0x83, 0xEC, 0x60
     };
     static const unsigned char rawFreeExpected[13] = {
-        0x48, 0x83, 0xec, 0x38, 0x48, 0x81, 0xfa,
-        0x00, 0x10, 0x00, 0x00, 0x72, 0x14
+        0x48, 0x83, 0xEC, 0x38, 0x48, 0x81, 0xFA, 0x00,
+        0x10, 0x00, 0x00, 0x72, 0x14
     };
     static const unsigned char creatureConstructorExpected[31] = {
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x57, 0x48,
-        0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0xe8, 0x89, 0x16, 0x03, 0x00, 0x90,
-        0x48, 0x8d, 0x05, 0xb1, 0xdf, 0xd2, 0x00
+        0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x4C,
+        0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48,
+        0x8B, 0xD9, 0xE8, 0x99, 0x21, 0x03, 0x00, 0x90,
+        0x48, 0x8D, 0x05, 0x29, 0x6D, 0xD4, 0x00
     };;
     static const unsigned char dataBindExpected[24] = {
-        0x48, 0x8b, 0x06,
-        0x48, 0x89, 0x87, 0x90, 0x02, 0x00, 0x00,
-        0x4c, 0x8b, 0x30,
-        0x44, 0x89, 0x7b, 0x10,
-        0x41, 0x8b, 0xae, 0x94, 0x0b, 0x00, 0x00
+        0x48, 0x8B, 0x06, 0x48, 0x89, 0x87, 0x90, 0x02,
+        0x00, 0x00, 0x4C, 0x8B, 0x30, 0x44, 0x89, 0x7B,
+        0x10, 0x41, 0x8B, 0xAE, 0x9C, 0x0B, 0x00, 0x00
     };
     static const unsigned char idAccessExpected[30] = {
-        0x48, 0x8b, 0x86, 0x90, 0x02, 0x00, 0x00, 0x4c, 0x8b, 0x00, 0x4d, 0x8b,
-        0x40, 0x10, 0x48, 0x8d, 0x15, 0x17, 0x67, 0xd2, 0x00, 0x48, 0x8d, 0x4d,
-        0xa0, 0xe8, 0xe6, 0xad, 0x57, 0x00
+        0x48, 0x8B, 0x86, 0x90, 0x02, 0x00, 0x00, 0x4C,
+        0x8B, 0x00, 0x4D, 0x8B, 0x40, 0x10, 0x48, 0x8D,
+        0x15, 0x87, 0xF4, 0xD3, 0x00, 0x48, 0x8D, 0x4D,
+        0xA0, 0xE8, 0x66, 0x02, 0x59, 0x00
     };;
     static const unsigned char worldToMapExpected[27] = {
-        0xf3, 0x0f, 0x10, 0x0d, 0x14, 0x7f, 0xc5, 0x00, 0x48, 0x8b, 0xc2, 0xf3,
-        0x41, 0x0f, 0x5e, 0x08, 0x0f, 0xc6, 0xc9, 0x00, 0x0f, 0x59, 0x09, 0x0f,
-        0x11, 0x0a, 0xc3
+        0xF3, 0x0F, 0x10, 0x0D, 0x4C, 0xF7, 0xC6, 0x00,
+        0x48, 0x8B, 0xC2, 0xF3, 0x41, 0x0F, 0x5E, 0x08,
+        0x0F, 0xC6, 0xC9, 0x00, 0x0F, 0x59, 0x09, 0x0F,
+        0x11, 0x0A, 0xC3
     };;
     static const unsigned char vectorAddExpected[14] = {
-        0x41, 0x0f, 0x10, 0x00, 0x48, 0x8b, 0xc2,
-        0x0f, 0x58, 0x01, 0x0f, 0x11, 0x02, 0xc3
+        0x41, 0x0F, 0x10, 0x00, 0x48, 0x8B, 0xC2, 0x0F,
+        0x58, 0x01, 0x0F, 0x11, 0x02, 0xC3
     };
     static const unsigned char positionTransformChainExpected[27] = {
-        0xe8, 0xc9, 0x4f, 0xe3, 0xff, 0x4c, 0x8d, 0x05, 0xca, 0xe1, 0x72, 0x00,
-        0x48, 0x8d, 0x95, 0xb0, 0x13, 0x00, 0x00, 0x48, 0x8b, 0xc8, 0xe8, 0x63,
-        0xdb, 0xf3, 0xff
+        0xE8, 0x56, 0xF7, 0xE2, 0xFF, 0x4C, 0x8D, 0x05,
+        0x37, 0x0C, 0x74, 0x00, 0x48, 0x8D, 0x95, 0x30,
+        0x14, 0x00, 0x00, 0x48, 0x8B, 0xC8, 0xE8, 0xA0,
+        0x97, 0xF3, 0xFF
     };;
     static const unsigned char offsetLoadExpected[22] = {
-        0xf3, 0x44, 0x0f, 0x10, 0x25, 0x3f, 0x62, 0xb9, 0x00, 0x41, 0x0f, 0x28,
-        0xd4, 0xf3, 0x44, 0x0f, 0x10, 0x0d, 0xb2, 0x5f, 0xb9, 0x00
+        0xF3, 0x44, 0x0F, 0x10, 0x25, 0xD8, 0x96, 0xBA,
+        0x00, 0x41, 0x0F, 0x28, 0xD4, 0xF3, 0x44, 0x0F,
+        0x10, 0x0D, 0x37, 0x94, 0xBA, 0x00
     };;
     static const unsigned char statusPositionGetterExpected[8] = {
-        0x48, 0x8d, 0x81, 0xf0, 0x00, 0x00, 0x00, 0xc3
+        0x48, 0x8D, 0x81, 0xF0, 0x00, 0x00, 0x00, 0xC3
     };
     static const unsigned char statusUniqueIdGetterExpected[8] = {
-        0x48, 0x8b, 0x81, 0xe0, 0x00, 0x00, 0x00, 0xc3
+        0x48, 0x8B, 0x81, 0xE0, 0x00, 0x00, 0x00, 0xC3
     };
     // The Lua MapGetAreaID native takes (map-information holder, float4*) and
     // walks a 16-byte area table.  The second window pins all four inclusive
     // XY bounds checks, the zero/no-match return and the matching area-ID
     // return.  These are semantic gates, not relocation-only signatures.
     static const unsigned char areaResolverHeaderExpected[57] = {
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57,
+        0x48, 0x89, 0x5C, 0x24, 0x10, 0x55, 0x56, 0x57,
         0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-        0x48, 0x83, 0xec, 0x20, 0x4c, 0x8b, 0x01, 0x45,
-        0x33, 0xf6, 0x48, 0x8b, 0xf2, 0x49, 0x8b, 0x40,
-        0x60, 0x49, 0x8d, 0x68, 0x68, 0x48, 0xc1, 0xe0,
-        0x04, 0x49, 0x8d, 0x78, 0x68, 0x48, 0x03, 0xe8,
-        0x48, 0x3b, 0xfd, 0x0f, 0x84, 0x45, 0x01, 0x00,
+        0x48, 0x83, 0xEC, 0x20, 0x4C, 0x8B, 0x01, 0x45,
+        0x33, 0xF6, 0x48, 0x8B, 0xF2, 0x49, 0x8B, 0x40,
+        0x60, 0x49, 0x8D, 0x68, 0x68, 0x48, 0xC1, 0xE0,
+        0x04, 0x49, 0x8D, 0x78, 0x68, 0x48, 0x03, 0xE8,
+        0x48, 0x3B, 0xFD, 0x0F, 0x84, 0x45, 0x01, 0x00,
         0x00
     };
     static const unsigned char areaResolverBoundsExpected[120] = {
-        0x48, 0x8b, 0x08, 0x66, 0x0f, 0x6e, 0x47, 0x08,
-        0x66, 0x0f, 0x6e, 0x67, 0x0c, 0xf3, 0x0f, 0x10,
-        0x1e, 0x66, 0x0f, 0x6e, 0x89, 0xb0, 0x01, 0x00,
-        0x00, 0x66, 0x0f, 0x6e, 0x91, 0xb4, 0x01, 0x00,
-        0x00, 0x0f, 0x5b, 0xc0, 0x0f, 0x5b, 0xc9, 0x0f,
-        0x2f, 0xc3, 0x0f, 0x5b, 0xd2, 0x0f, 0x5b, 0xe4,
-        0xf3, 0x0f, 0x58, 0xc8, 0xf3, 0x0f, 0x58, 0xd4,
-        0x77, 0x14, 0x0f, 0x2f, 0xd9, 0x77, 0x0f, 0xf3,
-        0x0f, 0x10, 0x46, 0x04, 0x0f, 0x2f, 0xe0, 0x77,
-        0x05, 0x0f, 0x2f, 0xc2, 0x76, 0x25, 0x48, 0x83,
-        0xc7, 0x10, 0x48, 0x3b, 0xfd, 0x0f, 0x85, 0xe2,
-        0xfe, 0xff, 0xff, 0x49, 0x8b, 0xc6, 0x48, 0x8b,
-        0x5c, 0x24, 0x68, 0x48, 0x83, 0xc4, 0x20, 0x41,
-        0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5f,
-        0x5e, 0x5d, 0xc3, 0x48, 0x8b, 0xc3, 0xeb, 0xe6
+        0x48, 0x8B, 0x08, 0x66, 0x0F, 0x6E, 0x47, 0x08,
+        0x66, 0x0F, 0x6E, 0x67, 0x0C, 0xF3, 0x0F, 0x10,
+        0x1E, 0x66, 0x0F, 0x6E, 0x89, 0xB0, 0x01, 0x00,
+        0x00, 0x66, 0x0F, 0x6E, 0x91, 0xB4, 0x01, 0x00,
+        0x00, 0x0F, 0x5B, 0xC0, 0x0F, 0x5B, 0xC9, 0x0F,
+        0x2F, 0xC3, 0x0F, 0x5B, 0xD2, 0x0F, 0x5B, 0xE4,
+        0xF3, 0x0F, 0x58, 0xC8, 0xF3, 0x0F, 0x58, 0xD4,
+        0x77, 0x14, 0x0F, 0x2F, 0xD9, 0x77, 0x0F, 0xF3,
+        0x0F, 0x10, 0x46, 0x04, 0x0F, 0x2F, 0xE0, 0x77,
+        0x05, 0x0F, 0x2F, 0xC2, 0x76, 0x25, 0x48, 0x83,
+        0xC7, 0x10, 0x48, 0x3B, 0xFD, 0x0F, 0x85, 0xE2,
+        0xFE, 0xFF, 0xFF, 0x49, 0x8B, 0xC6, 0x48, 0x8B,
+        0x5C, 0x24, 0x68, 0x48, 0x83, 0xC4, 0x20, 0x41,
+        0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5F,
+        0x5E, 0x5D, 0xC3, 0x48, 0x8B, 0xC3, 0xEB, 0xE6
     };
     // Both a player-area caller and a general status-area caller establish the
     // same ABI and the exact live-valid/live-object/map-holder fallback order.
     static const unsigned char areaPlayerChainExpected[79] = {
-        0x48, 0x8B, 0x91, 0x08, 0x02, 0x00, 0x00, 0x48, 0x8B, 0x8A, 0xB8, 0x32, 0x00, 0x00, 0x48, 0x8B, 0x91, 0x58, 0x01, 0x00, 0x00, 0x48, 0x85, 0xD2, 0x74, 0x22, 0x80, 0x3A, 0x00, 0x74, 0x1D, 0x4C, 0x8B, 0x81, 0x50, 0x01, 0x00, 0x00, 0x48, 0x8D, 0x91, 0xF0, 0x00, 0x00, 0x00, 0x4D, 0x85, 0xC0, 0x74, 0x11, 0x49, 0x8B, 0xC8, 0xE8, 0x25, 0x31, 0x06, 0x00, 0xEB, 0x13, 0x48, 0x8D, 0x91, 0xF0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x89, 0xE8, 0x00, 0x00, 0x00, 0xE8, 0x80, 0xB3, 0xFF, 0xFF
+        0x48, 0x8B, 0x91, 0x08, 0x02, 0x00, 0x00, 0x48,
+        0x8B, 0x8A, 0xB8, 0x32, 0x00, 0x00, 0x48, 0x8B,
+        0x91, 0x58, 0x01, 0x00, 0x00, 0x48, 0x85, 0xD2,
+        0x74, 0x22, 0x80, 0x3A, 0x00, 0x74, 0x1D, 0x4C,
+        0x8B, 0x81, 0x50, 0x01, 0x00, 0x00, 0x48, 0x8D,
+        0x91, 0xF0, 0x00, 0x00, 0x00, 0x4D, 0x85, 0xC0,
+        0x74, 0x11, 0x49, 0x8B, 0xC8, 0xE8, 0x25, 0x39,
+        0x06, 0x00, 0xEB, 0x13, 0x48, 0x8D, 0x91, 0xF0,
+        0x00, 0x00, 0x00, 0x48, 0x8B, 0x89, 0xE8, 0x00,
+        0x00, 0x00, 0xE8, 0x70, 0xB2, 0xFF, 0xFF
     };
     static const unsigned char areaStatusChainExpected[69] = {
-        0x48, 0x8b, 0x81, 0x58, 0x01, 0x00, 0x00, 0x48, 0x85, 0xc0, 0x74, 0x22,
-        0x80, 0x38, 0x00, 0x74, 0x1d, 0x48, 0x8b, 0x81, 0x50, 0x01, 0x00, 0x00,
-        0x48, 0x8d, 0x91, 0xf0, 0x00, 0x00, 0x00, 0x48, 0x85, 0xc0, 0x74, 0x11,
-        0x48, 0x8b, 0xc8, 0xe8, 0xd0, 0x3e, 0x0f, 0x00, 0xeb, 0x13, 0x48, 0x8d,
-        0x91, 0xf0, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x89, 0xe8, 0x00, 0x00, 0x00,
-        0xe8, 0x2b, 0xc1, 0x08, 0x00, 0x48, 0x3b, 0xc7, 0x0f
+        0x48, 0x8B, 0x81, 0x58, 0x01, 0x00, 0x00, 0x48,
+        0x85, 0xC0, 0x74, 0x22, 0x80, 0x38, 0x00, 0x74,
+        0x1D, 0x48, 0x8B, 0x81, 0x50, 0x01, 0x00, 0x00,
+        0x48, 0x8D, 0x91, 0xF0, 0x00, 0x00, 0x00, 0x48,
+        0x85, 0xC0, 0x74, 0x11, 0x48, 0x8B, 0xC8, 0xE8,
+        0x10, 0x55, 0x0F, 0x00, 0xEB, 0x13, 0x48, 0x8D,
+        0x91, 0xF0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x89,
+        0xE8, 0x00, 0x00, 0x00, 0xE8, 0x5B, 0xCE, 0x08,
+        0x00, 0x48, 0x3B, 0xC7, 0x0F
     };;
     static const unsigned char liveAreaHeaderExpected[67] = {
-        0x4c, 0x8b, 0xdc, 0x48, 0x81, 0xec, 0xa8, 0x00, 0x00, 0x00, 0x48, 0x8b,
-        0x05, 0x3f, 0xdd, 0xe2, 0x00, 0x48, 0x33, 0xc4, 0x48, 0x89, 0x84, 0x24,
-        0x90, 0x00, 0x00, 0x00, 0x49, 0xc7, 0x43, 0xc8, 0x00, 0x00, 0x00, 0x00,
-        0x48, 0x8b, 0x49, 0x30, 0x48, 0x8d, 0x05, 0x01, 0x7e, 0xc4, 0x00, 0x49,
-        0x89, 0x43, 0x88, 0x49, 0x8d, 0x43, 0xc8, 0x49, 0x89, 0x43, 0x90, 0x49,
-        0x8d, 0x43, 0x88, 0x49, 0x89, 0x43, 0xc0
+        0x4C, 0x8B, 0xDC, 0x48, 0x81, 0xEC, 0xA8, 0x00,
+        0x00, 0x00, 0x48, 0x8B, 0x05, 0x2F, 0x91, 0xE4,
+        0x00, 0x48, 0x33, 0xC4, 0x48, 0x89, 0x84, 0x24,
+        0x90, 0x00, 0x00, 0x00, 0x49, 0xC7, 0x43, 0xC8,
+        0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x49, 0x30,
+        0x48, 0x8D, 0x05, 0x81, 0xF5, 0xC5, 0x00, 0x49,
+        0x89, 0x43, 0x88, 0x49, 0x8D, 0x43, 0xC8, 0x49,
+        0x89, 0x43, 0x90, 0x49, 0x8D, 0x43, 0x88, 0x49,
+        0x89, 0x43, 0xC0
     };;
     static const unsigned char stampPositionCopyExpected[26] = {
-        0xf3, 0x0f, 0x10, 0x81, 0xe4, 0x03, 0x00, 0x00,
-        0xf3, 0x0f, 0x10, 0x89, 0xe0, 0x03, 0x00, 0x00,
-        0x0f, 0x14, 0xc8,
-        0x0f, 0x57, 0xf6,
-        0xf2, 0x0f, 0x10, 0xf1
+        0xF3, 0x0F, 0x10, 0x81, 0xE4, 0x03, 0x00, 0x00,
+        0xF3, 0x0F, 0x10, 0x89, 0xE0, 0x03, 0x00, 0x00,
+        0x0F, 0x14, 0xC8, 0x0F, 0x57, 0xF6, 0xF2, 0x0F,
+        0x10, 0xF1
     };
     // rax=(end-begin)/8; if (count >= 0x64) branch past construction.  This
     // proves the persistent vector cannot legally exceed our 100-pointer
     // stack-copy bound, independently of map/story unlock progress.
     static const unsigned char stampNativeLimitExpected[20] = {
-        0x48, 0x8b, 0x47, 0x08,
-        0x48, 0x2b, 0x07,
-        0x48, 0xc1, 0xf8, 0x03,
-        0x83, 0xf8, 0x64,
-        0x0f, 0x8d, 0xa3, 0x02, 0x00, 0x00
+        0x48, 0x8B, 0x47, 0x08, 0x48, 0x2B, 0x07, 0x48,
+        0xC1, 0xF8, 0x03, 0x83, 0xF8, 0x64, 0x0F, 0x8D,
+        0xA3, 0x02, 0x00, 0x00
     };
     // The native constructor allocates exactly 0x30 bytes at 0x20-byte
     // alignment, then writes the vtable, type at +0x10, and the complete
     // transformed float4 position at +0x20.  These bytes prove the layout
     // used by NightFakeMapStamp rather than inferring it from nearby reads.
     static const unsigned char stampAllocationExpected[11] = {
-        0xba, 0x20, 0x00, 0x00, 0x00,
-        0x41, 0xb8, 0x30, 0x00, 0x00, 0x00
+        0xBA, 0x20, 0x00, 0x00, 0x00, 0x41, 0xB8, 0x30,
+        0x00, 0x00, 0x00
     };
     static const unsigned char stampLayoutWritesExpected[18] = {
-        0x48, 0x8d, 0x05, 0x7a, 0x27, 0xb2, 0x00, 0x48, 0x89, 0x03, 0x44, 0x89,
-        0x73, 0x10, 0x0f, 0x11, 0x73, 0x20
+        0x48, 0x8D, 0x05, 0xE2, 0x4D, 0xB3, 0x00, 0x48,
+        0x89, 0x03, 0x44, 0x89, 0x73, 0x10, 0x0F, 0x11,
+        0x73, 0x20
     };;
     static const unsigned char stampAtlasTypeExpected[28] = {
-        0x41, 0x8b, 0x41, 0x10, 0xff, 0xc0, 0x99,
-        0x83, 0xe2, 0x03, 0x03, 0xc2, 0x44, 0x8b, 0xc0,
-        0x83, 0xe0, 0x03, 0x2b, 0xc2, 0x41, 0xc1, 0xf8, 0x02,
-        0x66, 0x0f, 0x6e, 0xd8
+        0x41, 0x8B, 0x41, 0x10, 0xFF, 0xC0, 0x99, 0x83,
+        0xE2, 0x03, 0x03, 0xC2, 0x44, 0x8B, 0xC0, 0x83,
+        0xE0, 0x03, 0x2B, 0xC2, 0x41, 0xC1, 0xF8, 0x02,
+        0x66, 0x0F, 0x6E, 0xD8
     };
     static const unsigned char stampSelectionExpected[32] = {
-        0x8b, 0x50, 0x10, 0xff, 0xca,
-        0x83, 0xb9, 0xb8, 0x03, 0x00, 0x00, 0xff, 0x74, 0x0d,
-        0x83, 0xb9, 0xb0, 0x03, 0x00, 0x00, 0x02,
-        0x0f, 0x84, 0x93, 0xe1, 0xff, 0xff,
-        0xe9, 0xee, 0xdc, 0xff, 0xff
+        0x8B, 0x50, 0x10, 0xFF, 0xCA, 0x83, 0xB9, 0xB8,
+        0x03, 0x00, 0x00, 0xFF, 0x74, 0x0D, 0x83, 0xB9,
+        0xB0, 0x03, 0x00, 0x00, 0x02, 0x0F, 0x84, 0x93,
+        0xE1, 0xFF, 0xFF, 0xE9, 0xEE, 0xDC, 0xFF, 0xFF
     };
     static const unsigned char stampPositionReadExpected[5] = {
-        0x41, 0x0f, 0x10, 0x61, 0x20
+        0x41, 0x0F, 0x10, 0x61, 0x20
     };
     static const unsigned char stampRenderArgsExpected[47] = {
-        0x48, 0x8D, 0x44, 0x24, 0x50, 0x48, 0x89, 0x44, 0x24, 0x28, 0xC7, 0x44, 0x24, 0x20, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x57, 0xDB, 0x4C, 0x8D, 0x44, 0x24, 0x40, 0x48, 0x8D, 0x54, 0x24, 0x30, 0x48, 0x8B, 0x8F, 0x48, 0x05, 0x00, 0x00, 0xE8, 0x07, 0xa2, 0x43, 0x00, 0x48, 0x83, 0xC3, 0x08
+        0x48, 0x8D, 0x44, 0x24, 0x50, 0x48, 0x89, 0x44,
+        0x24, 0x28, 0xC7, 0x44, 0x24, 0x20, 0xFF, 0xFF,
+        0xFF, 0xFF, 0x0F, 0x57, 0xDB, 0x4C, 0x8D, 0x44,
+        0x24, 0x40, 0x48, 0x8D, 0x54, 0x24, 0x30, 0x48,
+        0x8B, 0x8F, 0x48, 0x05, 0x00, 0x00, 0xE8, 0xD7,
+        0xB7, 0x44, 0x00, 0x48, 0x83, 0xC3, 0x08
     };
     static const unsigned char stampLoopExpected[13] = {
-        0x48, 0x83, 0xc3, 0x08,
-        0x48, 0x3b, 0xde,
-        0x0f, 0x85, 0x0b, 0xff, 0xff, 0xff
+        0x48, 0x83, 0xC3, 0x08, 0x48, 0x3B, 0xDE, 0x0F,
+        0x85, 0x0B, 0xFF, 0xFF, 0xFF
     };
     static const unsigned char rendererR9OverwriteExpected[12] = {
-        0x8b, 0x84, 0x24, 0xd0, 0x00, 0x00, 0x00,
-        0x4c, 0x8d, 0x4c, 0x24, 0x30
+        0x8B, 0x84, 0x24, 0xD0, 0x00, 0x00, 0x00, 0x4C,
+        0x8D, 0x4C, 0x24, 0x30
     };
     static const unsigned char enabledExpected[13] = {
-        0x48, 0x8b, 0x4b, 0x10,
-        0x80, 0xb9, 0x30, 0x01, 0x00, 0x00, 0x00, 0x74, 0x48
+        0x48, 0x8B, 0x4B, 0x10, 0x80, 0xB9, 0x30, 0x01,
+        0x00, 0x00, 0x00, 0x74, 0x48
     };
     static const unsigned char membershipExpected[51] = {
-        0x48, 0x8b, 0x81, 0xe8, 0x00, 0x00, 0x00,
-        0x48, 0x85, 0xc0, 0x74, 0x08, 0x48, 0x8b, 0x00,
-        0x4c, 0x8b, 0x00, 0xeb, 0x03, 0x4c, 0x8b, 0xc5,
-        0x48, 0x8b, 0x87, 0x68, 0x05, 0x00, 0x00,
-        0x48, 0x85, 0xc0, 0x74, 0x08, 0x48, 0x8b, 0x00,
-        0x48, 0x8b, 0x10, 0xeb, 0x03, 0x48, 0x8b, 0xd5,
-        0x4c, 0x3b, 0xc2, 0x75, 0x15
+        0x48, 0x8B, 0x81, 0xE8, 0x00, 0x00, 0x00, 0x48,
+        0x85, 0xC0, 0x74, 0x08, 0x48, 0x8B, 0x00, 0x4C,
+        0x8B, 0x00, 0xEB, 0x03, 0x4C, 0x8B, 0xC5, 0x48,
+        0x8B, 0x87, 0x68, 0x05, 0x00, 0x00, 0x48, 0x85,
+        0xC0, 0x74, 0x08, 0x48, 0x8B, 0x00, 0x48, 0x8B,
+        0x10, 0xEB, 0x03, 0x48, 0x8B, 0xD5, 0x4C, 0x3B,
+        0xC2, 0x75, 0x15
     };
     static const unsigned char spatialOwnerChainExpected[33] = {
-        0x48, 0x8b, 0x05, 0x27, 0xd9, 0xff, 0x00, 0x48, 0x8b, 0x88, 0x68, 0x02,
-        0x00, 0x00, 0x48, 0x8b, 0x89, 0xd8, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xd7,
-        0x48, 0x8b, 0x49, 0x30, 0xe8, 0xcd, 0xca, 0x0a, 0x00
+        0x48, 0x8B, 0x05, 0xD6, 0xC5, 0x01, 0x01, 0x48,
+        0x8B, 0x88, 0x68, 0x02, 0x00, 0x00, 0x48, 0x8B,
+        0x89, 0xD8, 0x00, 0x00, 0x00, 0x48, 0x8B, 0xD7,
+        0x48, 0x8B, 0x49, 0x30, 0xE8, 0xCC, 0xDA, 0x0A,
+        0x00
     };;
     static const unsigned char spatialAdmissionExpected[15] = {
-        0x48, 0x8B, 0x4E, 0x30, 0x41, 0xB0, 0x01, 0x48, 0x8B, 0xD3, 0xE8, 0x3b, 0x0a, 0x0A, 0x00
+        0x48, 0x8B, 0x4E, 0x30, 0x41, 0xB0, 0x01, 0x48,
+        0x8B, 0xD3, 0xE8, 0xFB, 0x18, 0x0A, 0x00
     };
     static const unsigned char spatialIndexInsertExpected[23] = {
-        0x48, 0x8D, 0x8F, 0xE0, 0x06, 0x00, 0x00, 0x66, 0x0F, 0x7F, 0x74, 0x24, 0x20, 0x4C, 0x8D, 0x44, 0x24, 0x20, 0xE8, 0x3c, 0xcd, 0xf8, 0xff
+        0x48, 0x8D, 0x8F, 0xE0, 0x06, 0x00, 0x00, 0x66,
+        0x0F, 0x7F, 0x74, 0x24, 0x20, 0x4C, 0x8D, 0x44,
+        0x24, 0x20, 0xE8, 0x8C, 0xC9, 0xF8, 0xFF
     };
     static const unsigned char divisorExpected[4] = {
-        0x4e, 0x62, 0x04, 0x41
+        0x4E, 0x62, 0x04, 0x41
     };
     static const unsigned char oneExpected[4] = {
-        0x00, 0x00, 0x80, 0x3f
+        0x00, 0x00, 0x80, 0x3F
     };
     static const unsigned char offsetXExpected[4] = {
-        0x00, 0x00, 0xae, 0x43
+        0x00, 0x00, 0xAE, 0x43
     };
     static const unsigned char offsetYExpected[4] = {
-        0x00, 0x00, 0x11, 0xc3
+        0x00, 0x00, 0x11, 0xC3
     };
     void* spatialEntry = g_originalSpatialTest
         ? reinterpret_cast<void*>(g_originalSpatialTest)
@@ -2769,7 +2872,7 @@ static bool InstallNightMapMarkers() {
         memcmp(reinterpret_cast<void*>(base + RVA_NIGHT_POSITION_GETTER_CALL),
                positionTransformChainExpected,
                sizeof(positionTransformChainExpected)) == 0 &&
-        memcmp(reinterpret_cast<void*>(base + 0x2DA410),
+        memcmp(reinterpret_cast<void*>(base + 0x2E9E63),
                offsetLoadExpected, sizeof(offsetLoadExpected)) == 0 &&
         memcmp(reinterpret_cast<void*>(base + RVA_NIGHT_MAP_STAMP_POSITION_COPY),
                stampPositionCopyExpected,
@@ -3099,12 +3202,8 @@ static bool InstallNightAnchorPosHook() {
 
     // Verify the function prologue at 0x1C1A00
     static const unsigned char anchorExpected[NIGHT_EXACT_ANCHOR_HOOK_LENGTH] = {
-        0x48, 0x89, 0x5C, 0x24, 0x08,  // mov [rsp+8], rbx
-        0x48, 0x89, 0x54, 0x24, 0x10,  // mov [rsp+0x10], rdx
-        0x55,                          // push rbp
-        0x56,                          // push rsi
-        0x57,                          // push rdi
-        0x48                           // REX.W prefix of sub rsp, 0xB0
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x54,
+        0x24, 0x10, 0x55, 0x56, 0x57, 0x48
     };
     if (memcmp(reinterpret_cast<void*>(base + RVA_NIGHT_EXACT_ANCHOR_SEARCH),
                anchorExpected, sizeof(anchorExpected)) != 0) {
@@ -3116,7 +3215,7 @@ static bool InstallNightAnchorPosHook() {
 
     // Also verify the full sub rsp instruction (bytes 13..19)
     static const unsigned char subRspExpected[7] = {
-        0x48, 0x81, 0xEC, 0xB0, 0x00, 0x00, 0x00  // sub rsp, 0xB0
+        0x48, 0x81, 0xEC, 0xB0, 0x00, 0x00, 0x00
     };
     if (memcmp(reinterpret_cast<void*>(base + RVA_NIGHT_EXACT_ANCHOR_SEARCH + 13),
                subRspExpected, sizeof(subRspExpected)) != 0) {
@@ -3695,4 +3794,98 @@ static void NightDiagEnumerateHashTable() {
     // --- 5. Summary: group by baseID ---
     // (We already logged all entries above; user can analyze from log)
     Log("[NightMapMarkers][hash] === enumeration complete ===\n");
+}
+
+
+// ---- HotConfig 注册函数（在 .inl 中实现以访问 static 变量）----
+void NightHotConfigRegisterAll() {
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_REDRAW, "RVA_NIGHT_MAP_REDRAW", HOT_RVA, 0x2F52F0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INITIALIZER_CALL, "RVA_NIGHT_MAP_INITIALIZER_CALL", HOT_RVA, 0x2F14F5);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_VECTOR_READ, "RVA_NIGHT_MAP_VECTOR_READ", HOT_RVA, 0x2F535C);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_VECTOR_RANGE_LOAD, "RVA_NIGHT_MAP_VECTOR_RANGE_LOAD", HOT_RVA, 0x2F536A);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_VTABLE, "RVA_NIGHT_MAP_TASK_VTABLE", HOT_RVA, 0xE42D38);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_COL, "RVA_NIGHT_MAP_TASK_COL", HOT_RVA, 0xEDDB88);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_TYPE, "RVA_NIGHT_MAP_TASK_TYPE", HOT_RVA, 0x1095748);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_INITIALIZE, "RVA_NIGHT_MAP_TASK_INITIALIZE", HOT_RVA, 0x2FE900);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_VTABLE, "RVA_NIGHT_MAP_STAMP_VTABLE", HOT_RVA, 0xE2A368);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_COL, "RVA_NIGHT_MAP_STAMP_COL", HOT_RVA, 0xEB67B0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_TYPE, "RVA_NIGHT_MAP_STAMP_TYPE", HOT_RVA, 0x1071260);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_DESTROY, "RVA_NIGHT_MAP_STAMP_DESTROY", HOT_RVA, 0x11B710);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_VTABLE, "RVA_NIGHT_CREATURE_VTABLE", HOT_RVA, 0xE27AF8);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_COL, "RVA_NIGHT_CREATURE_COL", HOT_RVA, 0xEB1780);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_TYPE, "RVA_NIGHT_CREATURE_TYPE", HOT_RVA, 0x106D5A0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_DESTROY, "RVA_NIGHT_CREATURE_DESTROY", HOT_RVA, 0xECA14);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_VTABLE, "RVA_NIGHT_CREATURE_CALLBACK_VTABLE", HOT_RVA, 0xE3E5D0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_COL, "RVA_NIGHT_CREATURE_CALLBACK_COL", HOT_RVA, 0xED5A90);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_COPY, "RVA_NIGHT_CREATURE_CALLBACK_COPY", HOT_RVA, 0x28E4C0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_INVOKE, "RVA_NIGHT_CREATURE_CALLBACK_INVOKE", HOT_RVA, 0x28E4B0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_DESTROY, "RVA_NIGHT_CREATURE_CALLBACK_DESTROY", HOT_RVA, 0x1969B0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INFORMATION_VTABLE, "RVA_NIGHT_MAP_INFORMATION_VTABLE", HOT_RVA, 0xE354E8);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INFORMATION_COL, "RVA_NIGHT_MAP_INFORMATION_COL", HOT_RVA, 0xEC8330);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INFORMATION_TYPE, "RVA_NIGHT_MAP_INFORMATION_TYPE", HOT_RVA, 0x1080890);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_VTABLE, "RVA_NIGHT_COM_MAP_VTABLE", HOT_RVA, 0xE314D0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_COL, "RVA_NIGHT_COM_MAP_COL", HOT_RVA, 0xEC2228);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_TYPE, "RVA_NIGHT_COM_MAP_TYPE", HOT_RVA, 0x107C640);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_SECONDARY_10, "RVA_NIGHT_COM_MAP_SECONDARY_10", HOT_RVA, 0xE313B8);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_SECONDARY_20, "RVA_NIGHT_COM_MAP_SECONDARY_20", HOT_RVA, 0xE314E0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_SECONDARY_248, "RVA_NIGHT_COM_MAP_SECONDARY_248", HOT_RVA, 0xE313C8);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CONSTRUCTOR, "RVA_NIGHT_CREATURE_CONSTRUCTOR", HOT_RVA, 0xE7400);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_DATA_BIND, "RVA_NIGHT_CREATURE_DATA_BIND", HOT_RVA, 0xE779E);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_ID_ACCESS, "RVA_NIGHT_CREATURE_ID_ACCESS", HOT_RVA, 0xE80EC);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_ID_FORMAT, "RVA_NIGHT_CREATURE_ID_FORMAT", HOT_RVA, 0xE27588);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_SEARCH, "RVA_NIGHT_SPATIAL_SEARCH", HOT_RVA, 0x194060);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_RAW_VECTOR_FREE, "RVA_NIGHT_RAW_VECTOR_FREE", HOT_RVA, 0xB8720);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STATUS_UNIQUE_ID_GETTER, "RVA_NIGHT_STATUS_UNIQUE_ID_GETTER", HOT_RVA, 0x119590);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STATUS_POSITION_GETTER, "RVA_NIGHT_STATUS_POSITION_GETTER", HOT_RVA, 0x1195A0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_RESOLVER, "RVA_NIGHT_MAP_AREA_RESOLVER", HOT_RVA, 0x16D860);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_RESOLVER_BOUNDS, "RVA_NIGHT_MAP_AREA_RESOLVER_BOUNDS", HOT_RVA, 0x16D983);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_LIVE_AREA_RESOLVER, "RVA_NIGHT_LIVE_AREA_RESOLVER", HOT_RVA, 0x1D5F00);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_PLAYER_CHAIN, "RVA_NIGHT_MAP_AREA_PLAYER_CHAIN", HOT_RVA, 0x1725A1);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_PLAYER_LIVE_CALL, "RVA_NIGHT_MAP_AREA_PLAYER_LIVE_CALL", HOT_RVA, 0x1725D6);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_PLAYER_CALL, "RVA_NIGHT_MAP_AREA_PLAYER_CALL", HOT_RVA, 0x1725EB);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_STATUS_CHAIN, "RVA_NIGHT_MAP_AREA_STATUS_CHAIN", HOT_RVA, 0xE09C4);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_STATUS_LIVE_CALL, "RVA_NIGHT_MAP_AREA_STATUS_LIVE_CALL", HOT_RVA, 0xE09EB);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_STATUS_CALL, "RVA_NIGHT_MAP_AREA_STATUS_CALL", HOT_RVA, 0xE0A00);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_WORLD_TO_MAP, "RVA_NIGHT_WORLD_TO_MAP", HOT_RVA, 0x223600);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_VECTOR_ADD, "RVA_NIGHT_VECTOR_ADD", HOT_RVA, 0xE7250);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_WORLD_TO_MAP_CALL, "RVA_NIGHT_WORLD_TO_MAP_CALL", HOT_RVA, 0x2E9E5B);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_POSITION_GETTER_CALL, "RVA_NIGHT_POSITION_GETTER_CALL", HOT_RVA, 0x2E9E45);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_VECTOR_ADD_CALL, "RVA_NIGHT_VECTOR_ADD_CALL", HOT_RVA, 0x2E9EAD);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_POSITION_COPY, "RVA_NIGHT_MAP_STAMP_POSITION_COPY", HOT_RVA, 0x2F5526);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_NATIVE_LIMIT, "RVA_NIGHT_MAP_STAMP_NATIVE_LIMIT", HOT_RVA, 0x2F5512);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_ALLOCATION, "RVA_NIGHT_MAP_STAMP_ALLOCATION", HOT_RVA, 0x2F5540);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_LAYOUT_WRITES, "RVA_NIGHT_MAP_STAMP_LAYOUT_WRITES", HOT_RVA, 0x2F557F);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_ATLAS_TYPE, "RVA_NIGHT_MAP_STAMP_ATLAS_TYPE", HOT_RVA, 0x2F5394);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_SELECTION, "RVA_NIGHT_MAP_STAMP_SELECTION", HOT_RVA, 0x2F77C2);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_POSITION_READ, "RVA_NIGHT_STAMP_POSITION_READ", HOT_RVA, 0x2F5406);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_RENDER_ARGS, "RVA_NIGHT_STAMP_RENDER_ARGS", HOT_RVA, 0x2F544E);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_RENDER_CALL, "RVA_NIGHT_STAMP_RENDER_CALL", HOT_RVA, 0x2F5474);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_LOOP_ADVANCE, "RVA_NIGHT_STAMP_LOOP_ADVANCE", HOT_RVA, 0x2F5479);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_RENDERER, "RVA_NIGHT_STAMP_RENDERER", HOT_RVA, 0x740C50);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_RENDERER_R9_OVERWRITE, "RVA_NIGHT_RENDERER_R9_OVERWRITE", HOT_RVA, 0x740CD2);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_ENABLED_MEMBERSHIP_PROOF, "RVA_NIGHT_ENABLED_MEMBERSHIP_PROOF", HOT_RVA, 0x1916D2);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_OWNER_CHAIN, "RVA_NIGHT_SPATIAL_OWNER_CHAIN", HOT_RVA, 0xE05D3);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_OWNER_LOOKUP_CALL, "RVA_NIGHT_SPATIAL_OWNER_LOOKUP_CALL", HOT_RVA, 0xE05EF);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_OWNER_LOOKUP, "RVA_NIGHT_SPATIAL_OWNER_LOOKUP", HOT_RVA, 0x18E0C0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_ADMISSION_WINDOW, "RVA_NIGHT_SPATIAL_ADMISSION_WINDOW", HOT_RVA, 0xEC576);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_ADMISSION_CALL, "RVA_NIGHT_SPATIAL_ADMISSION_CALL", HOT_RVA, 0xEC580);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_ADMISSION, "RVA_NIGHT_SPATIAL_ADMISSION", HOT_RVA, 0x18DE80);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_INDEX_INSERT_WINDOW, "RVA_NIGHT_SPATIAL_INDEX_INSERT_WINDOW", HOT_RVA, 0x18DEDD);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_INDEX_INSERT_CALL, "RVA_NIGHT_SPATIAL_INDEX_INSERT_CALL", HOT_RVA, 0x18DEEF);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_INDEX_INSERT, "RVA_NIGHT_SPATIAL_INDEX_INSERT", HOT_RVA, 0x11A880);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MEMBERSHIP_ADMISSION_CALL, "RVA_NIGHT_MEMBERSHIP_ADMISSION_CALL", HOT_RVA, 0x191722);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_DIVISOR, "RVA_NIGHT_MAP_DIVISOR", HOT_RVA, 0xA2AA88);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_SCALE_ONE, "RVA_NIGHT_MAP_SCALE_ONE", HOT_RVA, 0xE92D54);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_OFFSET_X, "RVA_NIGHT_MAP_OFFSET_X", HOT_RVA, 0xE932B0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_OFFSET_Y, "RVA_NIGHT_MAP_OFFSET_Y", HOT_RVA, 0xE93544);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_PLAYER_STATUS_VTABLE, "RVA_NIGHT_PLAYER_STATUS_VTABLE", HOT_RVA, 0xE2B790);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_PLAYER_STATUS_COL, "RVA_NIGHT_PLAYER_STATUS_COL", HOT_RVA, 0xEB8AC0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_PLAYER_STATUS_TYPE, "RVA_NIGHT_PLAYER_STATUS_TYPE", HOT_RVA, 0x10730C0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_GIMMICK_MGR, "RVA_NIGHT_GIMMICK_MGR", HOT_RVA, 0x1104C80);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STATUS_SEARCH_BY_BASE_ID, "RVA_NIGHT_STATUS_SEARCH_BY_BASE_ID", HOT_RVA, 0x259300);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_EXACT_ANCHOR_SEARCH, "RVA_NIGHT_EXACT_ANCHOR_SEARCH", HOT_RVA, 0x1CC450);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_HASH_LOOKUP, "RVA_NIGHT_MAP_HASH_LOOKUP", HOT_RVA, 0x18E0C0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SAVE_DATA_ACCESSOR, "RVA_NIGHT_SAVE_DATA_ACCESSOR", HOT_RVA, 0x27A40);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SAVE_DATA_PTR, "RVA_NIGHT_SAVE_DATA_PTR", HOT_RVA, 0x10FCBB0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_GAME_DB_PTR, "RVA_NIGHT_GAME_DB_PTR", HOT_RVA, 0x1104C10);
 }

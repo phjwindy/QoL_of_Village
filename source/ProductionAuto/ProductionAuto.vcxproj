@@ -50,7 +50,7 @@
   <ItemGroup>
     <ClCompile Include="production_auto.cpp" />
     <ClCompile Include="..\QoL_Shared\logging.cpp" />
-    <ClCompile Include="..\QoL_Shared\selfverify.cpp" />
+    <ClCompile Include="..\QoL_Shared\hotkey.cpp" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Targets" />

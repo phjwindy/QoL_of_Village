@@ -1,4 +1,4 @@
-// eyefix.cpp —— 结局后保持正常眼
+// eyefix.cpp —— 结局后保持正常眼 (EyeFix v1.2.7 正式版 for v1.20)
 //
 // 原理（源自 BigL233 dinput8.cpp 1123-1170 行）：
 //   PlayerSetupAnimeColor 函数中有一条条件跳转：
@@ -21,12 +21,16 @@
 #include <atomic>
 
 #include "logging.h"
-#include "hotkey.h"
-#include "selfverify.h"
+#include "game_window.h"   // HUD owner 绑定游戏窗口
+#include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
+#include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
+#include "hot_config.h"
+#include "quickmenu.h"
+#include "patch_safety.h"
 
 // 日志开关：发布版禁用日志输出
 // 调试时取消注释下行即可开启日志
-// #define EYEFIX_LOGGING
+// #define EYEFIX_LOGGING   // v1.2.13 转正：日志关闭（定位时取消注释重编）
 #ifdef EYEFIX_LOGGING
 #else
   #define LogOpen(x)  ((void)0)
@@ -38,7 +42,7 @@
 // ============================================================
 // 常量（build 25094764 / v1.09）
 // ============================================================
-static constexpr uintptr_t RVA_EYE_BRANCH = 0x12FD2D;
+static volatile uintptr_t RVA_EYE_BRANCH = 0x13A00D;
 
 static const unsigned char kEyeOriginal[6] = { 0x0F, 0x83, 0xEF, 0x00, 0x00, 0x00 };
 static const unsigned char kEyeNormal[6]   = { 0x90, 0xE9, 0xEF, 0x00, 0x00, 0x00 };
@@ -53,19 +57,13 @@ namespace G {
     std::atomic<bool> patched{false};  // 当前是否已打补丁（正常眼）
 }
 
-static QolHotKeys g_hotkeys;  // 运行时热键
+// v1.2.0: 独立热键已移除，开关由 QoL 快捷菜单（F1）驱动
 
 // ============================================================
 // 内存写入
 // ============================================================
 static bool WriteMem(void* target, const void* data, size_t size) {
-    DWORD old = 0;
-    if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &old)) return false;
-    memcpy(target, data, size);
-    DWORD restored = 0;
-    if (!VirtualProtect(target, size, old, &restored)) return false;
-    FlushInstructionCache(GetCurrentProcess(), target, size);
-    return true;
+    return qol::WritePatchChecked(target, data, size);
 }
 
 // ============================================================
@@ -234,6 +232,8 @@ static bool InitHud() {
         Log("[EyeFix] [HUD] CreateWindowExW failed (err=%lu)", GetLastError());
         return false;
     }
+    // v1.2.11: 移除游戏窗口 owner 绑定（GWLP_HWNDPARENT）——owned TOPMOST 窗口链
+    // 干扰 Alt+Tab 前台切换，游戏窗口切不回（切窗修复第四轮，详见 game_window.h v1.5）
 
     SetLayeredWindowAttributes(g_hudWindow, 0, 228, LWA_ALPHA);
     HRGN rounded = CreateRoundRectRgn(0, 0, width + 1, height + 1, 12, 12);
@@ -247,7 +247,7 @@ static void UpdateHudPosition() {
     if (!g_hudWindow) return;
     MONITORINFO mi = {};
     mi.cbSize = sizeof(mi);
-    HMONITOR mon = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
+    HMONITOR mon = MonitorFromWindow(QolFindGameWindow(), MONITOR_DEFAULTTOPRIMARY);
     if (!GetMonitorInfoW(mon, &mi)) {
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
     }
@@ -270,6 +270,7 @@ static void RefreshHud(bool patched) {
 
 static void PumpHud() {
     if (!g_hudWindow) return;
+    if (!QolGameInForeground()) { QolHudGuardVisibility(g_hudWindow); return; }  // v1.6: 失焦守卫兜底（alpha 渐隐）后 pump 静默
     MSG msg = {};
     while (PeekMessageW(&msg, g_hudWindow, 0, 0, PM_REMOVE)) {
         TranslateMessage(&msg);
@@ -277,36 +278,40 @@ static void PumpHud() {
     }
     if (IsWindowVisible(g_hudWindow) && g_hudHideAt != 0 &&
         GetTickCount64() >= g_hudHideAt) {
+        QolHudMarkHiddenByMod(g_hudWindow);  // MOD 主动隐藏：清守卫标记
         ShowWindow(g_hudWindow, SW_HIDE);
         g_hudHideAt = 0;
     }
 }
 
 // ============================================================
-// 输入：键盘 0 切换
+// 开关切换（v1.2.0：供 QoL 快捷菜单调用，原独立热键 0 已移除）
 // ============================================================
-static void PollToggleSwitch() {
-    static bool s_needsRelease = true;
-    bool down = (GetAsyncKeyState(QolHotKeysVk(&g_hotkeys, 0)) & 0x8000) != 0;
-
-    bool pressed = false;
-    if (s_needsRelease) {
-        if (!down) s_needsRelease = false;
-    } else if (down) {
-        pressed = true;
-        s_needsRelease = true;
+static void ToggleEyeFix() {
+    if (!G::available) return;
+    bool current = G::patched.load(std::memory_order_relaxed);
+    bool next = !current;
+    if (ToggleEyePatch(next)) {
+        Log("[EyeFix] 切换: %s -> %s",
+            current ? "正常眼" : "结局眼",
+            next ? "正常眼" : "结局眼");
+        RefreshHud(next);
     }
+}
 
-    if (pressed && G::available) {
-        bool current = G::patched.load(std::memory_order_relaxed);
-        bool next = !current;
-        if (ToggleEyePatch(next)) {
-            Log("[EyeFix] 切换: %s -> %s",
-                current ? "正常眼" : "结局眼",
-                next ? "正常眼" : "结局眼");
-            RefreshHud(next);
-        }
-    }
+static bool IsEyeFixOn() {
+    return G::patched.load(std::memory_order_relaxed);
+}
+
+// ============================================================
+// QoL 快捷菜单导出（宿主：ModManager F1）
+// ============================================================
+extern "C" __declspec(dllexport) int QolQuickMenuItems(
+        QolQuickMenuItem* items, int maxItems) {
+    int n = 1;  // 正常眼/结局眼切换
+    if (items && maxItems >= 1)
+        items[0] = { "正常眼 (EyeFix)", IsEyeFixOn, ToggleEyeFix };
+    return n;
 }
 
 // ============================================================
@@ -314,21 +319,19 @@ static void PollToggleSwitch() {
 // ============================================================
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("eyefix");
-    if (!SelfVerifyInit("eyefix")) return;
     Log("[EyeFix] mod_init 开始");
+    HotConfig_Register("eyefix", (void*)&RVA_EYE_BRANCH, "RVA_EYE_BRANCH", HOT_RVA, 0x13A00D);
+    HotConfig_Poll();
+    HotConfig_DumpCE("eyefix");
     G::base = (uintptr_t)GetModuleHandleW(nullptr);
     Log("[EyeFix] 游戏基址: 0x%llX", (unsigned long long)G::base);
-
-    QolHotKeysInit(&g_hotkeys, "eyefix");
-    QolHotKeysSetDefault(&g_hotkeys, "0");
-    QolRegisterHotKey("eyefix", "0");
 
     // 验证字节签名（不打补丁，默认结局眼）
     G::available = VerifyEyeBranch();
     if (!G::available) {
         Log("[EyeFix] [警告] 字节验证失败，补丁不可用（不影响游戏正常运行）");
     } else {
-        Log("[EyeFix] 就绪，默认结局眼，按 0 切换正常眼");
+        Log("[EyeFix] 就绪，默认结局眼（F1 快捷菜单可切换正常眼）");
     }
 
     G::ready = true;
@@ -337,10 +340,18 @@ extern "C" __declspec(dllexport) void mod_init(void) {
 }
 
 extern "C" __declspec(dllexport) void mod_tick(void) {
+    qol::budget::BeginFrame();  // P0: 帧锚定（幂等，多 DLL 安全）
+    static int s_bdgSlot = -1;  // P0 探针（惰性注册，析构自动上报）
+    if (s_bdgSlot < 0) s_bdgSlot = qol::budget::Slot("EyeFix");
+    struct BdgGuard {
+        int slot; uint64_t t0;
+        ~BdgGuard() { qol::budget::Report(slot, qol::budget::NowUs() - t0); }
+    } bdgGuard = { s_bdgSlot, qol::budget::NowUs() };
+
     if (!G::ready) return;
-    QolHotkeyCheckReload(&g_hotkeys);
-    PollToggleSwitch();
+    if (!QolGameBusy()) HotConfig_Poll();  // P1-2: 载入/菜单期间跳过配置轮询
     PumpHud();
+    QolHudGuardVisibility(g_hudWindow);  // v1.2.6: 失焦隐藏 HUD（不飘桌面）
 }
 
 extern "C" __declspec(dllexport) void unload(void) {

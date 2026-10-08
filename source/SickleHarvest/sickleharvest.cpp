@@ -1,5 +1,10 @@
-// sickleharvest.cpp — SickleHarvest MOD for Village in the Shade v1.09 (v2.3.0)
+// sickleharvest.cpp — SickleHarvest MOD for Village in the Shade v1.20 (v2.3.5 正式版)
 // 镰刀范围收割：挥镰刀时一次性收割范围内所有成熟田地作物 + 果树
+// v2.3.3: v1.09→v1.20 (build 25311578) 适配——16 个 RVA 全部重定位。
+//         SHAKE_TREE_SETTLE 序言变化（新增 mov [rax+0x10],rdx 影子栈保存，
+//         0x19D320→0x1A7A40，经 0x514 参数锚点投票 6/6 + REFRESH 邻接 0x4740 互证）；
+//         CROPS_ACTION_CALLSITE rel32 实读更新（目标 0xEEEB0=新 ACTION_CHECK，
+//         CALLSITE 链语义验证）；其余 10 个函数序言新旧完全一致。
 // v2.3.0: 代码审计修复——①HarvestSettle 循环加 SEH 保护（崩溃时恢复 savedTarget）；
 //         ②FastRegionReset 提前到 native 调用之前（detour 期间用干净缓存）；
 //         ③HarvestSettle 加 8ms 帧预算（大农场 100+ 作物时不卡顿，超出部分跳过）。
@@ -86,7 +91,7 @@
 //              逻辑：IsHarvestableNow 通过 → MOD 收割不写回；未通过/拿不到 landID → 写回交原生。
 // v2.2.2: 修复已验证转正，item_ctor / HarvestSettle 诊断 hook 已移除。
 
-// 参考权威源码 dinput8.cpp L2582-3270，RVA 已按 v1.09 (build 25094764) 反汇编确认
+// 参考权威源码 dinput8.cpp L2582-3270，RVA 已按 v1.20 (build 25311578) 重新定位验证
 // 作者：PHJ&消失的清风，转载或分享时请注明出处。
 
 #include <winsock2.h>
@@ -98,12 +103,15 @@
 #include <vector>
 
 #include "logging.h"
+#include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
+#include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
+#include "hot_config.h"
 #include "safe_call.h"
-#include "selfverify.h"
+#include "patch_safety.h"
 
 // 日志开关：发布版禁用日志输出
 // 调试时取消注释下行即可开启日志
-// #define SICKLEHARVEST_LOGGING
+// #define SICKLEHARVEST_LOGGING   // v2.3.7 转正：日志关闭（定位时取消注释重编）
 // #define SICKLEHARVEST_LOGGING
 #ifdef SICKLEHARVEST_LOGGING
   // 使用 QoL_Shared 的日志系统
@@ -114,32 +122,37 @@
   #define LogClose()  ((void)0)
 #endif
 
-// ---- 版本与 RVA 常量（v1.09, build 25094764）----------------------------
-// exe size=18134536, SHA-256=7DC5AD614541FB7708E42036DF7B7DA85053AB4959F6ED2E9DFE1330AEDBD381 (v1.09)
+// [diag] 诊断日志门控（默认关）；调试时 #define DIAG_SICKLEHARVEST 1 开启
+#ifndef DIAG_SICKLEHARVEST
+#define DIAG_SICKLEHARVEST 0
+#endif
 
-static constexpr uintptr_t RVA_SICKLE_GET_TARGET_CROPS   = 0x23B710;
-static constexpr uintptr_t RVA_CROPS_ACTION_CHECK        = 0x0E57C0;
-static constexpr uintptr_t RVA_CROPS_GET_CURRENT_FORM    = 0x0E50A0;
-static constexpr uintptr_t RVA_HARVEST_SEARCH            = 0x2123B0;
-static constexpr uintptr_t RVA_HARVEST_SETTLE            = 0x211DD0;
-static constexpr uintptr_t RVA_CROPS_ACTION_CALLSITE     = 0x23B9C2;
-static constexpr uintptr_t RVA_SHAKE_TREE_SETTLE         = 0x19D320;
-static constexpr uintptr_t RVA_SHAKE_TREE_REMAINING      = 0x0E5D70;
-static constexpr uintptr_t RVA_SHAKE_RAW_VECTOR_FREE     = 0x0AF690;
-static constexpr uintptr_t RVA_SHAKE_TREE_REFRESH        = 0x198BE0;
-static constexpr uintptr_t RVA_SHAKE_TREE_EVENT          = 0x73ED10;
+// ---- 版本与 RVA 常量（v1.20, build 25311578）----------------------------
+// exe size=18305544, SHA-256=AC7D955BAA915929B185DF85CFA13F7E81AD57A9C68F308DA769739775869A05 (v1.20 build 25311578)
+
+static volatile uintptr_t RVA_SICKLE_GET_TARGET_CROPS   = 0x247F10;
+static volatile uintptr_t RVA_CROPS_ACTION_CHECK        = 0x0EEEB0;
+static volatile uintptr_t RVA_CROPS_GET_CURRENT_FORM    = 0x0EE790;
+static volatile uintptr_t RVA_HARVEST_SEARCH            = 0x21D960;
+static volatile uintptr_t RVA_HARVEST_SETTLE            = 0x21D380;
+static volatile uintptr_t RVA_CROPS_ACTION_CALLSITE     = 0x2481C2;
+static volatile uintptr_t RVA_SHAKE_TREE_SETTLE         = 0x1A7A40;
+static volatile uintptr_t RVA_SHAKE_TREE_REMAINING      = 0x0EF470;
+static volatile uintptr_t RVA_SHAKE_RAW_VECTOR_FREE     = 0x0B8720;
+static volatile uintptr_t RVA_SHAKE_TREE_REFRESH        = 0x1A3300;
+static volatile uintptr_t RVA_SHAKE_TREE_EVENT          = 0x7600C0;
 // v1.8.0-diag: RTTI 链不可用，改用模块基址 + vtable RVA 指纹识别
 // v2.2.2: RVA_ITEM_CTOR 已随 item_ctor 诊断 hook 一并移除
-static constexpr uintptr_t MODULE_IMAGE_SIZE             = 0x5000000; // 模块映射大小（vtable 指纹识别用）
+static volatile uintptr_t MODULE_IMAGE_SIZE             = 0x5000000; // 模块映射大小（vtable 指纹识别用）
 // v1.3.0-diag: Retrieve hook 已移除（诊断完成，0 命中已证手动采集不走该状态机）
 
 // 结构偏移
-static constexpr uintptr_t COM_CROPS_STATUS_OFFSET       = 0x250;
-static constexpr uintptr_t CROPS_LAND_ID_OFFSET          = 0x18;
-static constexpr uintptr_t CROPS_IS_HARVESTABLE_OFFSET   = 0x78;
-static constexpr uintptr_t CROPS_CHANGE_FORM_OFFSET      = 0x80;
-static constexpr uintptr_t CROPS_IS_BIG_FORM_OFFSET      = 0x98;
-static constexpr uintptr_t PLAYER_ACTION_TARGET_OFFSET   = 0x248;
+static volatile uintptr_t COM_CROPS_STATUS_OFFSET       = 0x250;
+static volatile uintptr_t CROPS_LAND_ID_OFFSET          = 0x18;
+static volatile uintptr_t CROPS_IS_HARVESTABLE_OFFSET   = 0x78;
+static volatile uintptr_t CROPS_CHANGE_FORM_OFFSET      = 0x80;
+static volatile uintptr_t CROPS_IS_BIG_FORM_OFFSET      = 0x98;
+static volatile uintptr_t PLAYER_ACTION_TARGET_OFFSET   = 0x248;
 
 // hook 长度
 static constexpr size_t SICKLE_HOOK_LENGTH         = 16;
@@ -157,24 +170,24 @@ static constexpr size_t SICKLE_SHAKE_TREE_MAX_TARGETS = 256;
 static constexpr size_t SICKLE_SHAKE_TREE_MAX_SHAKES  = 64;
 
 // ---- 空间搜索常量（从 ChestSort/AutoHarvest 移植，v1.09 已验证）----------------
-static constexpr uintptr_t RVA_GAME_ROOT              = 0x10D4950;
-static constexpr uintptr_t WORLD_OBJECT_REGISTRY_RVA  = 0x10DCA20;
-static constexpr uintptr_t SEARCH_CALLBACK_VTABLE_RVA = 0xE1C168;
-static constexpr uintptr_t RVA_SPATIAL_SEARCH          = 0x189A10;
-static constexpr uintptr_t RVA_RAW_VECTOR_FREE_GEN    = 0x0AF690;
+static volatile uintptr_t RVA_GAME_ROOT              = 0x10FCBB0;
+static volatile uintptr_t WORLD_OBJECT_REGISTRY_RVA  = 0x1104C80;
+static volatile uintptr_t SEARCH_CALLBACK_VTABLE_RVA = 0xE3E608;
+static volatile uintptr_t RVA_SPATIAL_SEARCH          = 0x194060;
+static volatile uintptr_t RVA_RAW_VECTOR_FREE_GEN    = 0x0B8720;
 
 // 指针链偏移（与 ChestSort / AutoHarvest 一致）
-static constexpr uintptr_t ROOT_PLAYER_OFFSET         = 0x208;
-static constexpr uintptr_t ROOT_MAP_OWNER_OFFSET       = 0x268;
-static constexpr uintptr_t MAP_INFO_OFFSET             = 0x0d8;
-static constexpr uintptr_t MAP_SPATIAL_OWNER_OFFSET    = 0x030;
-static constexpr uintptr_t MAP_SPATIAL_INDEX_OFFSET    = 0x6e0;
-static constexpr uintptr_t PLAYER_OBJECT_STATUS_OFFSET = 0x32b8;
+static volatile uintptr_t ROOT_PLAYER_OFFSET         = 0x208;
+static volatile uintptr_t ROOT_MAP_OWNER_OFFSET       = 0x268;
+static volatile uintptr_t MAP_INFO_OFFSET             = 0x0d8;
+static volatile uintptr_t MAP_SPATIAL_OWNER_OFFSET    = 0x030;
+static volatile uintptr_t MAP_SPATIAL_INDEX_OFFSET    = 0x6e0;
+static volatile uintptr_t PLAYER_OBJECT_STATUS_OFFSET = 0x32b8;
 
 // Gimmick 偏移（与 ChestSort / AutoHarvest 一致）
-static constexpr uintptr_t GIMMICK_DATA_HOLDER_OFFSET  = 0x240;
-static constexpr uintptr_t GIMMICK_MODULE_NAME_OFFSET  = 0x0d8;
-static constexpr uintptr_t GIMMICK_POSITION_OFFSET     = 0x0f0;
+static volatile uintptr_t GIMMICK_DATA_HOLDER_OFFSET  = 0x240;
+static volatile uintptr_t GIMMICK_MODULE_NAME_OFFSET  = 0x0E0;  // v1.20: 0xD8→0xE0
+static volatile uintptr_t GIMMICK_POSITION_OFFSET     = 0x0f0;
 
 // 侦查搜索半径
 static constexpr float SCOUT_RADIUS = 500.0f;
@@ -234,6 +247,9 @@ static std::atomic<bool> g_sickleHarvestEnabled{false};
 static bool g_sickleHarvestHookReady = false;
 static bool g_shakeTreeHarvestReady = false;
 static bool g_shakeTreeVisualReady = false;
+// H3: 保存安装时的原始字节，供 unload 还原 hook
+static unsigned char g_savedActionCheckBytes[ACTION_CHECK_HOOK_LENGTH] = {};
+static unsigned char g_savedSickleHookBytes[SICKLE_HOOK_LENGTH] = {};
 // ---- 空间搜索全局状态（侦查诊断用）-------------------------------------------
 static FnSpatialSearch     g_spatialSearch = nullptr;
 static FnRawVectorFreeGen  g_rawVectorFreeGen = nullptr;
@@ -291,14 +307,7 @@ static bool IsReadable(const void* pointer, size_t size) {
 }
 
 static bool WriteMem(void* target, const void* data, size_t size) {
-    if (!target || !data || size == 0) return false;
-    DWORD old = 0;
-    if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &old)) return false;
-    memcpy(target, data, size);
-    const bool readback = memcmp(target, data, size) == 0;
-    VirtualProtect(target, size, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), target, size);
-    return readback;
+    return qol::WritePatchChecked(target, data, size);
 }
 
 static bool SealExecutableMemory(void* address, size_t size) {
@@ -976,8 +985,14 @@ static bool TrySettleShakeTreeOnce(void* cropsComponent, u64* outDelta) {
     float position[4] = {};
     RawPointerVector output = {};
     g_insideShakeTreeSettlement = true;
-    g_shakeTreeSettle(cropsComponent, &output, ACTION_SHAKE_TREE, position,
-                      settleParam5, 0, 2);
+    __try {
+        g_shakeTreeSettle(cropsComponent, &output, ACTION_SHAKE_TREE, position,
+                          settleParam5, 0, 2);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_insideShakeTreeSettlement = false;
+        Log("[SickleHarvest] ShakeTreeSettle SEH caught (safe skip)\n");
+        return false;
+    }
     g_insideShakeTreeSettlement = false;
     ReleaseShakeTreeSettleOutput(&output);
 
@@ -1003,7 +1018,11 @@ static bool TryPlayShakeTreeEvent(void* component, int eventId,
                     sizeof(void*) * 2)) {
         return false;
     }
-    g_shakeTreeEvent(visual, eventId, eventValue);
+    __try {
+        g_shakeTreeEvent(visual, eventId, eventValue);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
     return true;
 }
 
@@ -1019,7 +1038,11 @@ static bool TryRefreshShakeTreeVisual(void* component, void* status) {
     void* mapInfo = *reinterpret_cast<void**>(
         reinterpret_cast<uintptr_t>(component) + 0x248);
     if (!mapInfo || !IsReadable(mapInfo, sizeof(void*))) return false;
-    g_shakeTreeRefresh(component);
+    __try {
+        g_shakeTreeRefresh(component);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
     return true;
 }
 
@@ -1044,9 +1067,11 @@ static bool __fastcall CropsActionCheckDetour(
         }
         // 每 128 次打印一次（防刷屏），SICKLE-failed 对象每次挥刀 dump 类名
         if ((s_checkCalls % 128) == 0) {
+#if DIAG_SICKLEHARVEST
             Log("[SickleHarvest][diag] action_check#%d action=0x%llX native=%d cropsStatus=%p landId=0x%llX\n",
                 s_checkCalls, (unsigned long long)actionID, nativeResult ? 1 : 0, cropsStatus,
                 (unsigned long long)landId);
+#endif
         }
     }
 
@@ -1355,12 +1380,16 @@ if (!result) {
                     diagHarvestable = *reinterpret_cast<const u32*>(
                         reinterpret_cast<uintptr_t>(diagForm) + CROPS_IS_HARVESTABLE_OFFSET);
                 }
+#if DIAG_SICKLEHARVEST
                 Log("[SickleHarvest][diag] unresolved comp=%p status=%p form=%p harvestable=0x%X landID=0x%llX\n",
                     *read, diagStatus, diagForm, diagHarvestable,
                     (unsigned long long)diagLandID);
+#endif
             } else {
+#if DIAG_SICKLEHARVEST
                 Log("[SickleHarvest][diag] unresolved comp=%p status=%p (no status/form)\n",
                     *read, diagStatus);
+#endif
             }
         }
     }
@@ -1458,16 +1487,16 @@ static bool InstallShakeTreeSickleSupport() {
     uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
 
     static const unsigned char expectedShakeTreeSettle[16] = {
-        0x48, 0x8b, 0xc4, 0x55, 0x53, 0x56, 0x57, 0x41,
-        0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48
+        0x48, 0x8b, 0xc4, 0x48, 0x89, 0x50, 0x10, 0x55,
+        0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41
     };
     static const unsigned char expectedShakeTreeRemaining[12] = {
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x57,
-        0x48, 0x83, 0xec, 0x20, 0x48, 0x8b
+        0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83,
+        0xec, 0x20, 0x48, 0x8b
     };
     static const unsigned char expectedShakeRawVectorFree[12] = {
-        0x48, 0x83, 0xec, 0x38, 0x48, 0x81,
-        0xfa, 0x00, 0x10, 0x00, 0x00, 0x72
+        0x48, 0x83, 0xec, 0x38, 0x48, 0x81, 0xfa, 0x00,
+        0x10, 0x00, 0x00, 0x72
     };
     unsigned char* shakeSettle = reinterpret_cast<unsigned char*>(
         base + RVA_SHAKE_TREE_SETTLE);
@@ -1496,12 +1525,12 @@ static bool InstallShakeTreeSickleSupport() {
         "raw-vector-free verified; one-swing tree harvest ENABLED\n");
 
     static const unsigned char expectedShakeTreeRefresh[12] = {
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48,
-        0x89, 0x6c, 0x24, 0x18, 0x56, 0x57
+        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c,
+        0x24, 0x18, 0x56, 0x57
     };
     static const unsigned char expectedShakeTreeEvent[12] = {
-        0x48, 0x89, 0x5c, 0x24, 0x18, 0x57,
-        0x48, 0x83, 0xec, 0x40, 0x48, 0x8b
+        0x48, 0x89, 0x5c, 0x24, 0x18, 0x57, 0x48, 0x83,
+        0xec, 0x40, 0x48, 0x8b
     };
     if (memcmp(reinterpret_cast<void*>(base + RVA_SHAKE_TREE_REFRESH),
                expectedShakeTreeRefresh, sizeof(expectedShakeTreeRefresh)) != 0 ||
@@ -1533,28 +1562,27 @@ static bool InstallSickleHarvestHook() {
         0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57
     };
     static const unsigned char expectedHarvestSettle[12] = {
-        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48,
-        0x89, 0x74, 0x24, 0x18, 0x48, 0x89
+        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74,
+        0x24, 0x18, 0x48, 0x89
     };
     static const unsigned char expectedHarvestSearch[12] = {
-        0x40, 0x53, 0x56, 0x57, 0x48, 0x83,
-        0xec, 0x30, 0x48, 0x89, 0x54, 0x24
+        0x40, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x30,
+        0x48, 0x89, 0x54, 0x24
     };
     static const unsigned char expectedGetCurrentForm[12] = {
-        0x48, 0x8b, 0x41, 0x10, 0x45, 0x33,
-        0xc0, 0x4c, 0x8b, 0xd9, 0x48, 0x8b
+        0x48, 0x8b, 0x41, 0x10, 0x45, 0x33, 0xc0, 0x4c,
+        0x8b, 0xd9, 0x48, 0x8b
     };
     static const unsigned char expectedActionCallsite[21] = {
         0x41, 0xb8, 0x10, 0x04, 0x00, 0x00, 0x48, 0x8b,
         0xd7, 0x49, 0x8b, 0x8e, 0x50, 0x02, 0x00, 0x00,
-        0xe8, 0xe9, 0x9d, 0xea, 0xff
+        0xe8, 0xd9, 0x6c, 0xea, 0xff
     };
     unsigned char* actionCheck = reinterpret_cast<unsigned char*>(
         base + RVA_CROPS_ACTION_CHECK);
     static const unsigned char expectedActionCheck[ACTION_CHECK_HOOK_LENGTH] = {
-        0x48, 0x89, 0x5c, 0x24, 0x08,
-        0x48, 0x89, 0x6c, 0x24, 0x10,
-        0x56, 0x57, 0x41, 0x56
+        0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c,
+        0x24, 0x10, 0x56, 0x57, 0x41, 0x56
     };
     if (memcmp(target, expected, sizeof(expected)) != 0 ||
         memcmp(actionCheck, expectedActionCheck, sizeof(expectedActionCheck)) != 0 ||
@@ -1569,6 +1597,10 @@ static bool InstallSickleHarvestHook() {
         Log("[SickleHarvest] function byte check FAILED; hook disabled safely\n");
         return false;
     }
+
+    // H3: 保存原始字节供 unload 还原
+    memcpy(g_savedActionCheckBytes, actionCheck, ACTION_CHECK_HOOK_LENGTH);
+    memcpy(g_savedSickleHookBytes, target, SICKLE_HOOK_LENGTH);
 
     // CropsActionCheck trampoline
     unsigned char* actionTrampoline = static_cast<unsigned char*>(VirtualAlloc(
@@ -1608,6 +1640,10 @@ static bool InstallSickleHarvestHook() {
         nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     if (!trampoline) {
         Log("[SickleHarvest] trampoline allocation failed (error %lu)\n", GetLastError());
+        // H4: 回滚已安装的 actionCheck hook
+        WriteMem(actionCheck, g_savedActionCheckBytes, ACTION_CHECK_HOOK_LENGTH);
+        VirtualFree(actionTrampoline, 0, MEM_RELEASE);
+        g_originalCropsActionCheck = nullptr;
         return false;
     }
     memcpy(trampoline, expected, sizeof(expected));
@@ -1619,6 +1655,10 @@ static bool InstallSickleHarvestHook() {
     if (!SealExecutableMemory(trampoline, 64)) {
         VirtualFree(trampoline, 0, MEM_RELEASE);
         Log("[SickleHarvest] trampoline sealing failed\n");
+        // H4: 回滚已安装的 actionCheck hook
+        WriteMem(actionCheck, g_savedActionCheckBytes, ACTION_CHECK_HOOK_LENGTH);
+        VirtualFree(actionTrampoline, 0, MEM_RELEASE);
+        g_originalCropsActionCheck = nullptr;
         return false;
     }
     g_originalGetSickleTargetCrops =
@@ -1638,6 +1678,10 @@ static bool InstallSickleHarvestHook() {
         g_originalGetSickleTargetCrops = nullptr;
         g_getCurrentCropsForm = nullptr;
         g_harvestSettle = nullptr;
+        // H4: 回滚已安装的 actionCheck hook
+        WriteMem(actionCheck, g_savedActionCheckBytes, ACTION_CHECK_HOOK_LENGTH);
+        VirtualFree(actionTrampoline, 0, MEM_RELEASE);
+        g_originalCropsActionCheck = nullptr;
         Log("[SickleHarvest] hook write failed\n");
         return false;
     }
@@ -1659,9 +1703,9 @@ static bool InstallSickleHarvestHook() {
         g_searchCallbackVTable = base + SEARCH_CALLBACK_VTABLE_RVA;
         // 字节签名验证 spatialSearch
         static const unsigned char expectedSpatialSearch[14] = {
-            0x40, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-            0x41, 0x57, 0x48, 0x83, 0xEC, 0x60
-        };
+        0x40, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+        0x41, 0x57, 0x48, 0x83, 0xec, 0x60
+    };
         if (memcmp(reinterpret_cast<void*>(base + RVA_SPATIAL_SEARCH),
                    expectedSpatialSearch, sizeof(expectedSpatialSearch)) != 0) {
             Log("[SickleHarvest][scout] spatialSearch byte check FAILED\n");
@@ -1684,17 +1728,82 @@ static bool InstallSickleHarvestHook() {
 
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("sickleharvest");
-    if (!SelfVerifyInit("sickleharvest")) return;
-    Log("[SickleHarvest] mod_init -- v2.2.2 v1.09 build 25094764\n");
+    Log("[SickleHarvest] mod_init -- v2.3.5 v1.20 build 25311578\n");
+    HotConfig_Register("sickleharvest", (void*)&RVA_SICKLE_GET_TARGET_CROPS, "RVA_SICKLE_GET_TARGET_CROPS", HOT_RVA, 0x247F10);
+    HotConfig_Register("sickleharvest", (void*)&RVA_CROPS_ACTION_CHECK, "RVA_CROPS_ACTION_CHECK", HOT_RVA, 0x0EEEB0);
+    HotConfig_Register("sickleharvest", (void*)&RVA_CROPS_GET_CURRENT_FORM, "RVA_CROPS_GET_CURRENT_FORM", HOT_RVA, 0x0EE790);
+    HotConfig_Register("sickleharvest", (void*)&RVA_HARVEST_SEARCH, "RVA_HARVEST_SEARCH", HOT_RVA, 0x21D960);
+    HotConfig_Register("sickleharvest", (void*)&RVA_HARVEST_SETTLE, "RVA_HARVEST_SETTLE", HOT_RVA, 0x21D380);
+    HotConfig_Register("sickleharvest", (void*)&RVA_CROPS_ACTION_CALLSITE, "RVA_CROPS_ACTION_CALLSITE", HOT_RVA, 0x2481C2);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_SETTLE, "RVA_SHAKE_TREE_SETTLE", HOT_RVA, 0x1A7A40);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_REMAINING, "RVA_SHAKE_TREE_REMAINING", HOT_RVA, 0x0EF470);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_RAW_VECTOR_FREE, "RVA_SHAKE_RAW_VECTOR_FREE", HOT_RVA, 0x0B8720);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_REFRESH, "RVA_SHAKE_TREE_REFRESH", HOT_RVA, 0x1A3300);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_EVENT, "RVA_SHAKE_TREE_EVENT", HOT_RVA, 0x7600C0);
+    // MODULE_IMAGE_SIZE 是扫描区域大小（非模块内偏移），用 HOT_INT64
+    // 避免被 IsRvaSane 误拒（D6/D7 的 RVA 合法性检查只应管真正的 RVA）
+    HotConfig_Register("sickleharvest", (void*)&MODULE_IMAGE_SIZE, "MODULE_IMAGE_SIZE", HOT_INT64, 0x5000000);
+    HotConfig_Register("sickleharvest", (void*)&COM_CROPS_STATUS_OFFSET, "COM_CROPS_STATUS_OFFSET", HOT_RVA, 0x250);
+    HotConfig_Register("sickleharvest", (void*)&CROPS_LAND_ID_OFFSET, "CROPS_LAND_ID_OFFSET", HOT_RVA, 0x18);
+    HotConfig_Register("sickleharvest", (void*)&CROPS_IS_HARVESTABLE_OFFSET, "CROPS_IS_HARVESTABLE_OFFSET", HOT_RVA, 0x78);
+    HotConfig_Register("sickleharvest", (void*)&CROPS_CHANGE_FORM_OFFSET, "CROPS_CHANGE_FORM_OFFSET", HOT_RVA, 0x80);
+    HotConfig_Register("sickleharvest", (void*)&CROPS_IS_BIG_FORM_OFFSET, "CROPS_IS_BIG_FORM_OFFSET", HOT_RVA, 0x98);
+    HotConfig_Register("sickleharvest", (void*)&PLAYER_ACTION_TARGET_OFFSET, "PLAYER_ACTION_TARGET_OFFSET", HOT_RVA, 0x248);
+    HotConfig_Register("sickleharvest", (void*)&RVA_GAME_ROOT, "RVA_GAME_ROOT", HOT_RVA, 0x10FCBB0);
+    HotConfig_Register("sickleharvest", (void*)&WORLD_OBJECT_REGISTRY_RVA, "WORLD_OBJECT_REGISTRY_RVA", HOT_RVA, 0x1104C80);
+    HotConfig_Register("sickleharvest", (void*)&SEARCH_CALLBACK_VTABLE_RVA, "SEARCH_CALLBACK_VTABLE_RVA", HOT_RVA, 0xE3E608);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SPATIAL_SEARCH, "RVA_SPATIAL_SEARCH", HOT_RVA, 0x194060);
+    HotConfig_Register("sickleharvest", (void*)&RVA_RAW_VECTOR_FREE_GEN, "RVA_RAW_VECTOR_FREE_GEN", HOT_RVA, 0x0B8720);
+    HotConfig_Register("sickleharvest", (void*)&ROOT_PLAYER_OFFSET, "ROOT_PLAYER_OFFSET", HOT_RVA, 0x208);
+    HotConfig_Register("sickleharvest", (void*)&ROOT_MAP_OWNER_OFFSET, "ROOT_MAP_OWNER_OFFSET", HOT_RVA, 0x268);
+    HotConfig_Register("sickleharvest", (void*)&MAP_INFO_OFFSET, "MAP_INFO_OFFSET", HOT_RVA, 0x0d8);
+    HotConfig_Register("sickleharvest", (void*)&MAP_SPATIAL_OWNER_OFFSET, "MAP_SPATIAL_OWNER_OFFSET", HOT_RVA, 0x030);
+    HotConfig_Register("sickleharvest", (void*)&MAP_SPATIAL_INDEX_OFFSET, "MAP_SPATIAL_INDEX_OFFSET", HOT_RVA, 0x6e0);
+    HotConfig_Register("sickleharvest", (void*)&PLAYER_OBJECT_STATUS_OFFSET, "PLAYER_OBJECT_STATUS_OFFSET", HOT_RVA, 0x32b8);
+    HotConfig_Register("sickleharvest", (void*)&GIMMICK_DATA_HOLDER_OFFSET, "GIMMICK_DATA_HOLDER_OFFSET", HOT_RVA, 0x240);
+    HotConfig_Register("sickleharvest", (void*)&GIMMICK_MODULE_NAME_OFFSET, "GIMMICK_MODULE_NAME_OFFSET", HOT_RVA, 0x0E0);
+    HotConfig_Register("sickleharvest", (void*)&GIMMICK_POSITION_OFFSET, "GIMMICK_POSITION_OFFSET", HOT_RVA, 0x0f0);
+    HotConfig_Poll();
+    HotConfig_DumpCE("sickleharvest");
     InstallSickleHarvestHook();
 }
 
 extern "C" __declspec(dllexport) void mod_tick(void) {
+    qol::budget::BeginFrame();  // P0: 帧锚定（幂等，多 DLL 安全）
+    static int s_bdgSlot = -1;  // P0 探针（惰性注册，析构自动上报）
+    if (s_bdgSlot < 0) s_bdgSlot = qol::budget::Slot("SickleHarvest");
+    struct BdgGuard {
+        int slot; uint64_t t0;
+        ~BdgGuard() { qol::budget::Report(slot, qol::budget::NowUs() - t0); }
+    } bdgGuard = { s_bdgSlot, qol::budget::NowUs() };
+
+    if (QolGameBusy()) return;  // P1-2: 载入/菜单期间静默
+    HotConfig_Poll();
     // Hook-based：安装后由游戏原生挥镰刀驱动，tick 无需额外逻辑
 }
 
 extern "C" __declspec(dllexport) void unload(void) {
     Log("[SickleHarvest] unload\n");
+    g_sickleHarvestEnabled.store(false, std::memory_order_relaxed);
+    uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+
+    // H3: 还原 actionCheck hook
+    if (g_originalCropsActionCheck) {
+        WriteMem(reinterpret_cast<void*>(base + RVA_CROPS_ACTION_CHECK),
+                 g_savedActionCheckBytes, ACTION_CHECK_HOOK_LENGTH);
+        VirtualFree(g_originalCropsActionCheck, 0, MEM_RELEASE);
+        g_originalCropsActionCheck = nullptr;
+    }
+
+    // H3: 还原 getTargetCrops hook
+    if (g_originalGetSickleTargetCrops) {
+        WriteMem(reinterpret_cast<void*>(base + RVA_SICKLE_GET_TARGET_CROPS),
+                 g_savedSickleHookBytes, SICKLE_HOOK_LENGTH);
+        VirtualFree(g_originalGetSickleTargetCrops, 0, MEM_RELEASE);
+        g_originalGetSickleTargetCrops = nullptr;
+    }
+
+    g_sickleHarvestHookReady = false;
     LogClose();
 }
 

@@ -52,7 +52,11 @@ static HFONT g_productionHudFont = nullptr;
 static bool g_productionHudVisible = false;
 
 
-static bool g_productionHudToggleArmed = true;  // edge-detect for F5
+// 统一热键（从 qol_hotkeys.txt 读取 productionauto 行）
+static QolHotKeys g_productionHudHotkeys = {};
+
+
+static bool g_productionHudToggleArmed = true;  // edge-detect for HUD toggle key
 
 
 static wchar_t g_productionHudText[2048] = {};
@@ -2546,11 +2550,10 @@ static void ProductionHudPoll() {
 
     ProductionHudPumpMessages();
 
-
-
-
-
-    const bool f5Down = (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
+    // 热键统一机制：从 qol_hotkeys.txt 读取（支持游戏内改键）
+    QolHotkeyCheckReload(&g_productionHudHotkeys);
+    const bool f5Down = (GetAsyncKeyState(
+        QolHotKeysVk(&g_productionHudHotkeys, 0)) & 0x8000) != 0;
 
 
     if (!f5Down) g_productionHudToggleArmed = true;

@@ -52,7 +52,6 @@
     <ClCompile Include="..\QoL_Shared\logging.cpp" />
     <ClCompile Include="..\QoL_Shared\hotkey.cpp" />
     <ClCompile Include="..\QoL_Shared\aobscan.cpp" />
-    <ClCompile Include="..\QoL_Shared\selfverify.cpp" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Targets" />

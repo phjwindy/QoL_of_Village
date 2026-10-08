@@ -1,4 +1,4 @@
-// modmanager.cpp —— ModManager v1.1.4: 游戏内 MOD 开关管理器
+// modmanager.cpp —— ModManager v1.2.6: 游戏内 MOD 开关管理器 + F2 快捷菜单
 //
 // v1.1.2: static 缓冲区扩容（16→64 槽）+ TerminateProcess 前存档检测。
 // v1.1.1 修复：注册表清理——移除退役 SaveBackup/LangHelper、去重第三方 MOD 重复条目。
@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <mmsystem.h>    // joyGetPosEx (winmm)
 #include <setupapi.h>    // SetupAPI 枚举 HID 设备
+#include "quickmenu.h"   // QoL 快捷菜单跨 DLL 约定
 #include <hidsdi.h>      // HidD_GetHidGuid / HidD_GetAttributes
 #include <atomic>
 #pragma comment(lib, "winmm.lib")
@@ -49,10 +50,11 @@
 // 日志（QoL_Shared）
 // ============================================================
 #include "logging.h"
-#include "selfverify.h"
+#include "budget.h"    // v1.2.3: P0 性能探针读取（共享内存跨 DLL）
+#include "game_window.h"  // v1.2.6: HUD 可见性守卫（失焦隐藏，不飘桌面）
 
 // 日志开关：发布版禁用日志
-// #define MODMANAGER_LOGGING
+// #define MODMANAGER_LOGGING   // v1.2.17 转正：日志关闭（定位时取消注释重编）
 #ifdef MODMANAGER_LOGGING
 #else
   #define LogOpen(x)  ((void)0)
@@ -62,7 +64,7 @@
 #endif
 
 // 版本号
-#define MODMANAGER_VERSION L"v1.1.4"
+#define MODMANAGER_VERSION L"v1.2.7"
 
 // ============================================================
 // 手柄输入（三路混合：XInput 线程 + HID 直读 DualSense 线程 + joyGetPosEx 回退）
@@ -248,6 +250,7 @@ static constexpr int DUALSENSE_BTN_OFFSET = 8;  // buttons[0] 字节偏移
 
 static volatile LONG g_hidThreadRunning = 0;
 static HANDLE g_hidThread = nullptr;
+static HANDLE g_hidDev = nullptr;  // H6: 保存当前 HID 设备句柄，供 ShutdownGamepad 取消阻塞 ReadFile
 
 // 枚举 HID 设备找到 DualSense 并打开
 static HANDLE OpenDualSense() {
@@ -309,6 +312,7 @@ static DWORD WINAPI HidPollThread(LPVOID) {
             continue;
         }
         if (!wasConnected) { wasConnected = true; g_gpHID.connected.store(true, std::memory_order_relaxed); Log("[ModManager] [hid] DualSense 已连接\n"); }
+        g_hidDev = hDev;  // H6: 保存设备句柄，供 ShutdownGamepad 关闭取消 ReadFile
         BYTE report[DUALSENSE_REPORT_SIZE] = {};
         while (InterlockedCompareExchange(&g_hidThreadRunning, 1, 1) == 1) {
             __try {
@@ -344,6 +348,7 @@ static DWORD WINAPI HidPollThread(LPVOID) {
                 break;
             }
         }
+        g_hidDev = nullptr;  // H6: 清除全局引用，避免 ShutdownGamepad 重复关闭
         CloseHandle(hDev);
         g_gpHID.connected.store(false, std::memory_order_relaxed);
     }
@@ -381,9 +386,16 @@ static void InitGamepad() {
 static void ShutdownGamepad() {
     InterlockedExchange(&g_xinputThreadRunning, 0);
     InterlockedExchange(&g_hidThreadRunning, 0);
-    // 线程退出由 unload 中的 Sleep 等待完成
+    // XInput 线程无阻塞调用，Sleep(50) 足够
     if (g_xinputThread) { Sleep(50); CloseHandle(g_xinputThread); g_xinputThread = nullptr; }
-    if (g_hidThread) { Sleep(50); CloseHandle(g_hidThread); g_hidThread = nullptr; }
+    // H6: HID 线程 ReadFile 阻塞，先关闭设备句柄取消 ReadFile，再等待线程退出
+    if (g_hidThread) {
+        HANDLE dev = g_hidDev;
+        if (dev) { CloseHandle(dev); g_hidDev = nullptr; }
+        WaitForSingleObject(g_hidThread, 2000);
+        CloseHandle(g_hidThread);
+        g_hidThread = nullptr;
+    }
 }
 
 // 手柄 L1+R1 同时按下检测（用于打开面板）
@@ -550,13 +562,13 @@ static ModEntry g_mods[] = {
     { L"Sower 范围播种", L"Sower", L"sower.dll", L"5, D-pad Left",
       L"qol_sower.log", false, nullptr },
 
-    { L"EyeFix 正常眼", L"EyeFix", L"eyefix.dll", L"0",
+    { L"EyeFix 正常眼", L"EyeFix", L"eyefix.dll", nullptr,
       L"qol_eyefix.log", false, nullptr },
 
     { L"MonsterMark 怪物标记", L"MonsterMark", L"monstermark.dll", nullptr,
       L"qol_monstermark.log", false, nullptr },
 
-    { L"AutoFish 自动钓鱼", L"AutoFish", L"autofish.dll", L"9, F10",
+    { L"AutoFish 自动钓鱼", L"AutoFish", L"autofish.dll", nullptr,
       nullptr, false, nullptr },
 
     { L"ProductionAuto 链式自动化", L"ProductionAuto", L"productionauto.dll", L"F5",
@@ -565,63 +577,43 @@ static ModEntry g_mods[] = {
     { L"Scarecrow 稻草人重叠", L"Scarecrow", L"scarecrow.dll", nullptr,
       L"qol_scarecrow.log", false, nullptr },
 
-    { L"AutoHarvest 自动采集", L"AutoHarvest", L"autoharvest.dll", L"8, F4",
+    { L"AutoHarvest 自动采集", L"AutoHarvest", L"autoharvest.dll", L"F4",
       L"qol_autoharvest.log", false, nullptr },
 
     { L"SickleHarvest 镰刀范围收割", L"SickleHarvest", L"sickleharvest.dll", nullptr,
       L"qol_sickleharvest.log", false, nullptr },
 
     // ---- 第三方 MOD（thirdParty=true，热键只读显示，不支持改键）----
-    { L"AutoPet \x81EA\x52A8\x629A\x6478", L"AutoPet", L"autopet.dll", nullptr,
-      nullptr, false, nullptr, true, false },
-
-    { L"BirthdayReminder \x751F\x65E5\x63D0\x9192", L"BirthdayReminder", L"birthdayreminder.dll", nullptr,
-      nullptr, false, nullptr, true, false },
-
-    { L"CameraZoom \x955C\x5934\x53D8\x7126", L"CameraZoom", L"camerazoom.dll", nullptr,
-      nullptr, false, nullptr, true, false },
-
-    { L"HuntOneShot \x4E00\x51FB\x72E9\x730E", L"HuntOneShot", L"huntoneshot.dll", nullptr,
-      nullptr, false, nullptr, true, false },
-
-    { L"MineHelper \x91C7\x77FF\x52A9\x624B", L"MineHelper", L"minehelper.dll", nullptr,
-      nullptr, false, nullptr, true, false },
-
-    { L"SelfServiceStore \x81EA\x52A9\x5546\x5E97", L"SelfServiceStore", L"selfservice.dll", nullptr,
-      nullptr, false, nullptr, true, false },
-
+    // v1.2.14: AutoPet/BirthdayReminder/CameraZoom/HuntOneShot/MineHelper/
+    // SelfServiceStore/TimeFreeze 7 个实为 QoL 自有 MOD，从本区移回正式区
+    // （thirdParty=true 导致 ApplyHotkeysFile 跳过覆盖 → huntoneshot=F6 /
+    // camerazoom=F7 在面板不显示；2026-10-06 用户实锤）
     { L"Teleport \x4F20\x9001", L"Teleport", L"teleport.dll", nullptr,
-      nullptr, false, nullptr, true, false },
-
-    { L"TimeFreeze \x65F6\x95F4\x51BB\x7ED3", L"TimeFreeze", L"timefreeze.dll", nullptr,
       nullptr, false, nullptr, true, false },
 
     { L"SCPatch \x5168\x666F\x91C7\x96C6", L"SCPatch", nullptr, nullptr,
       nullptr, false, nullptr, true, false },
 
+    { L"AutoPet 自动摸摸", L"AutoPet", L"autopet.dll", nullptr,
+      L"qol_autopet.log", false, nullptr },
+
     { L"BirthdayReminder 生日提醒", L"BirthdayReminder", L"birthdayreminder.dll", nullptr,
-      nullptr, false, nullptr },
+      L"qol_birthdayreminder.log", false, nullptr },
 
-    { L"CameraZoom 镜头变焦", L"CameraZoom", L"camerazoom.dll", nullptr,
-      nullptr, false, nullptr },
+    { L"CameraZoom 镜头变焦", L"CameraZoom", L"camerazoom.dll", L"F7",
+      L"qol_camerazoom.log", false, nullptr },
 
-    { L"HuntOneShot 一击狩猎", L"HuntOneShot", L"huntoneshot.dll", nullptr,
-      nullptr, false, nullptr },
+    { L"HuntOneShot 一击猎杀", L"HuntOneShot", L"huntoneshot.dll", L"F6",
+      L"qol_huntoneshot.log", false, nullptr },
 
     { L"MineHelper 采矿助手", L"MineHelper", L"minehelper.dll", nullptr,
-      nullptr, false, nullptr },
+      L"qol_minehelper.log", false, nullptr },
 
     { L"SelfServiceStore 自助商店", L"SelfServiceStore", L"selfservice.dll", nullptr,
-      nullptr, false, nullptr },
-
-    { L"Teleport 传送", L"Teleport", L"teleport.dll", nullptr,
-      nullptr, false, nullptr },
+      L"qol_selfservice.log", false, nullptr },
 
     { L"TimeFreeze 时间冻结", L"TimeFreeze", L"timefreeze.dll", nullptr,
-      nullptr, false, nullptr },
-
-    { L"SCPatch 全景采集", L"SCPatch", nullptr, nullptr,
-      nullptr, false, nullptr, true, false },
+      L"qol_timefreeze.log", false, nullptr },
 
     // ---- ModManager 自身（最后显示，可停用保护）----
     { L"ModManager 模块管理器", L"ModManager", L"modmanager.dll", nullptr,
@@ -666,6 +658,7 @@ static bool g_restartRequested = false; // 本轮是否修改过开关（关闭�
 static int  g_changedCount = 0;         // 本轮修改过的 MOD 数量
 static std::wstring g_changedNames;     // 本轮修改过的 MOD 名称（顿号分隔）
 static int  g_scrollTop = 0;            // 列表滚动偏移（单位：行）
+static int  g_visibleCount = 0;         // v1.2.7: 可见条目数（Missing 已隐藏不占行）
 static int  g_hoverRow = -1;            // 当前鼠标悬停行（-1 = 无）
 
 static std::wstring g_gameDir;
@@ -863,7 +856,7 @@ static void PollGamepadNav() {
         g_gpFocus = 0;
         // 若光标移出可视区，滚动跟随
         if (g_gpCursor >= 0) {
-            int maxScroll = g_modCount - VISIBLE_ROWS;
+            int maxScroll = g_visibleCount - VISIBLE_ROWS;
             if (maxScroll < 0) maxScroll = 0;
             if (g_gpCursor < g_scrollTop) g_scrollTop = g_gpCursor;
             if (g_gpCursor > g_scrollTop + VISIBLE_ROWS - 1) g_scrollTop = g_gpCursor - (VISIBLE_ROWS - 1);
@@ -993,12 +986,13 @@ static BOOL RemoveDirectoryRecursive(const std::wstring& path) {
     return ok;
 }
 // ============================================================
-// 自动清理旧版本：扫描三个目录，同一前缀只保留最新一份
+// 自动清理旧版本：扫描三个目录，同前缀按配额保留备用
 // 规则：
 //   1. 优先级：Mods > 待用MOD > 弃用MOD
-//   2. Mods 中的活跃版本是最高优先级
-//   3. 待用MOD 中如果同一前缀有多个文件夹，只保留最新的一份，其余移到弃用MOD
-//   4. 已在 Mods 中有活跃版本的，待用MOD 中同前缀的全移到弃用MOD
+//   2. Mods 中的活跃版本优先级最高；Mods 中并存的旧版本移到弃用MOD（防双加载）
+//   3. v1.2.11（用户拍板 2026-10-05）：待用MOD 保留最新 2 份备用，其余移到弃用MOD
+//      （旧规则：只留活跃版 1 份且清空待用MOD同前缀全部，回退无从可取）
+//   4. _pre_ 临时备份不占备用名额，一律移到弃用MOD
 // ============================================================
 static void CleanupStaleFolders() {
     // 收集三个目录中所有文件夹，按前缀分组
@@ -1073,16 +1067,27 @@ static void CleanupStaleFolders() {
             return CompareVersion(a.name.c_str(), b.name.c_str()) > 0;
         });
 
-        // 第一个是要保留的，其余按规则处理
-        // 如果保留的在 Mods (priority 0) → 其余全移到 弃用MOD
-        // 如果保留的在 待用MOD (priority 1) → 弃用MOD 的全删，待用MOD 其余的移到 弃用MOD
-        const FolderEntry& keep = g.entries[0];
+        // v1.2.11: 备用配额保留策略
+        //   - Mods：保留最新 1 份（活跃版）；并存的旧版本移到弃用MOD（防双加载）
+        //   - 待用MOD：保留最新 2 份备用（用户拍板：至少保留两个版本备用）
+        //   - _pre_ 临时备份不占配额，一律移到弃用MOD
+        bool modsKept = false;   // Mods 活跃版是否已保留
+        int  storageKept = 0;    // 待用MOD 已保留备用份数
 
-        for (size_t k = 1; k < g.entries.size(); ++k) {
+        for (size_t k = 0; k < g.entries.size(); ++k) {
             FolderEntry& e = g.entries[k];
 
             // 弃用MOD 中的重复直接跳过（已经在弃用目录了）
             if (e.dirPriority == 2) continue;
+
+            // _pre_ 临时备份：不占备用配额，一律移到弃用MOD
+            if (e.name.find(L"_pre_") == std::wstring::npos) {
+                if (e.dirPriority == 0) {
+                    if (!modsKept) { modsKept = true; continue; }  // 保留 Mods 活跃版
+                } else {
+                    if (storageKept < 2) { storageKept++; continue; }  // 保留待用MOD 最新 2 份备用
+                }
+            }
 
             // 移到 弃用MOD
             std::wstring src = e.fullDir + L"\\" + e.name;
@@ -1189,17 +1194,25 @@ static void ScanToggleState() {
     }
 
     // 重排 displayIdx：已启用（含自身）在前，停用在后，按原顺序稳定排列
+    // v1.2.7: 目录不存在的 MOD（Missing，如已剔除/移出的 ProductionAuto 等）
+    //         直接隐藏——displayIdx=-1 不占行，渲染/点击/手柄自然跳过
     int next = 0;
     for (int i = 0; i < g_modCount; ++i)
         if (g_mods[i].toggle == ToggleState::Enabled ||
             g_mods[i].toggle == ToggleState::Self)
             g_mods[i].displayIdx = next++;
-    for (int i = 0; i < g_modCount; ++i)
-        if (g_mods[i].toggle != ToggleState::Enabled &&
-            g_mods[i].toggle != ToggleState::Self)
+    for (int i = 0; i < g_modCount; ++i) {
+        if (g_mods[i].toggle == ToggleState::Enabled ||
+            g_mods[i].toggle == ToggleState::Self) continue;
+        if (g_mods[i].toggle == ToggleState::Missing)
+            g_mods[i].displayIdx = -1;   // 隐藏：目录不存在
+        else
             g_mods[i].displayIdx = next++;
+    }
+    g_visibleCount = next;
 
-    Log("[ModManager] toggle scan + sort done, %d mods\n", g_modCount);
+    Log("[ModManager] toggle scan + sort done, %d mods (%d visible)\n",
+        g_modCount, g_visibleCount);
 }
 
 // ============================================================
@@ -1676,6 +1689,8 @@ static void ApplyHotkeysFile() {
 // 扫描 MOD 加载状态
 // ============================================================
 static void ScanModStatus() {
+    // v1.2.7: 每次扫描先重扫 mods/待用MOD 目录（folder/version 实时刷新）
+    ScanModFolders();
     // 先确定开关位置 + 排序
     ScanToggleState();
     // 扫描第三方 MOD 热键（README/qol_meta.txt → 缓存）
@@ -1857,11 +1872,44 @@ static bool SetModEnabled(int index, bool enable) {
     const std::wstring src  = (enable ? g_storageDir : g_modsDir) + L"\\" + g_mods[index].folder;
     const std::wstring dest = (enable ? g_modsDir : g_storageDir) + L"\\" + g_mods[index].folder;
 
-    // 目标目录存在则先移除（异常清理）
+    // v1.2.15: toggle 同步落盘日志——异步日志队列在进程非正常退出（卡死被结束）
+    // 会丢日志，2026-10-06 用户关闭 MOD 后游戏卡死时零日志证据。关键操作直接
+    // 同步追加到独立小文件，卡死时证据已在盘上。
+    {
+        SYSTEMTIME st = {};
+        GetLocalTime(&st);
+        wchar_t diagLine[512] = {};
+        _snwprintf_s(diagLine, _TRUNCATE,
+                     L"[%04d-%02d-%02d %02d:%02d:%02d] toggle %s %ls -> %ls\r\n",
+                     st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+                     st.wSecond, enable ? L"ENABLE " : L"DISABLE",
+                     src.c_str(), dest.c_str());
+        FILE* diagLog = _wfopen(
+            (g_gameDir + L"\\qol_modmanager_toggle.log").c_str(), L"a");
+        if (diagLog) {
+            fwprintf(diagLog, L"%ls", diagLine);
+            fclose(diagLog);
+        }
+    }
+
+    // v1.2.15: 目标目录存在时改为带时间戳改名保留（旧逻辑无条件
+    // RemoveDirectoryW——仅空目录可删、失败不检查、且有无警告删除数据风险；
+    // 非空 dest 时 MoveFileExW 对目录会失败）
     DWORD dAttr = GetFileAttributesW(dest.c_str());
     if (dAttr != INVALID_FILE_ATTRIBUTES) {
-        SetFileAttributesW(dest.c_str(), FILE_ATTRIBUTE_NORMAL);
-        RemoveDirectoryW(dest.c_str());
+        SYSTEMTIME rst = {};
+        GetLocalTime(&rst);
+        wchar_t stamp[32] = {};
+        swprintf_s(stamp, L"_conflict_%04d%02d%02d_%02d%02d%02d",
+                   rst.wYear, rst.wMonth, rst.wDay,
+                   rst.wHour, rst.wMinute, rst.wSecond);
+        const std::wstring rescue = dest + stamp;
+        if (MoveFileW(dest.c_str(), rescue.c_str())) {
+            Log("[ModManager] dest existed, renamed to %ls\n", rescue.c_str());
+        } else {
+            Log("[ModManager] dest rename failed (err=%lu), move may fail\n",
+                GetLastError());
+        }
     }
 
     BOOL ok = MoveFileExW(src.c_str(), dest.c_str(),
@@ -2194,13 +2242,34 @@ static void PaintPanel(HWND window, HDC destination) {
                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     // 副标题（操作提示，QoL 套件标识已在告示中体现，不再重复）
-    wchar_t sub[160];
-    swprintf_s(sub, L"F2/L1+R1 \u5173\u95ED%s%s",
+    wchar_t sub[320];
+    swprintf_s(sub, L"F9/Esc \u5173\u95ED%s%s",
                g_inSave ? L"  \u00B7  \u5B58\u6863\u4E2D\u9501\u5B9A" : L"",
                g_restartRequested ? L"  \u00B7  \u5F85\u91CD\u542F" : L"");
+    // v1.2.3: P0 性能探针摘要（各 MOD tick ema 耗时，共享内存读取）
+    {
+        uint32_t perfCount = 0;
+        const qol::budget::BudgetModEntry* perfMods =
+            qol::budget::ModEntries(&perfCount);
+        if (perfMods && perfCount > 0) {
+            wchar_t* p = sub + wcslen(sub);
+            size_t remain = (sizeof(sub) / sizeof(wchar_t)) - wcslen(sub);
+            if (remain > 48) {
+                *p++ = L' '; *p++ = L'\u00B7'; *p++ = L' '; remain -= 3;
+                for (uint32_t pi = 0; pi < perfCount && remain > 30; ++pi) {
+                    if (perfMods[pi].frames == 0) continue;
+                    int w = _snwprintf_s(p, remain, _TRUNCATE, L"%hs %lluu ",
+                        perfMods[pi].name,
+                        (unsigned long long)perfMods[pi].ema_us);
+                    if (w <= 0) break;
+                    p += w; remain -= (size_t)w;
+                }
+            }
+        }
+    }
     RECT subRect = { LEFT_MARGIN + S(2), S(36), PANEL_WIDTH - S(60), S(54) };
     DrawTextEx(dc, g_smallFont, Colors::TextDim, sub, subRect,
-               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     // 关闭按钮（右上角 X）
     RECT closeRect = { PANEL_WIDTH - S(46), S(16), PANEL_WIDTH - S(18), S(44) };
@@ -2228,7 +2297,7 @@ static void PaintPanel(HWND window, HDC destination) {
         warnColor = Colors::Accent;
         RoundFill(dc, warnRect, S(6), RGB(46, 42, 32));
     } else {
-        swprintf_s(warn, L"\u9F20\u6807\u70B9\u51FB\u5F00\u5173 \u00B7 \u624B\u67C4\u65B9\u5411\u952E\u9009\u62E9 / R1 \u786E\u8BA4 \u00B7 Esc/F2/L1+R1 \u5173\u95ED \u00B7 \u4FEE\u6539\u540E\u91CD\u542F\u751F\u6548");
+        swprintf_s(warn, L"\u9F20\u6807\u70B9\u51FB\u5F00\u5173 \u00B7 \u624B\u67C4\u65B9\u5411\u952E\u9009\u62E9 / R1 \u786E\u8BA4 \u00B7 Esc/F9/L3+R3 \u5173\u95ED \u00B7 \u4FEE\u6539\u540E\u91CD\u542F\u751F\u6548");
         warnColor = Colors::TextDim;
         RoundFill(dc, warnRect, S(6), Colors::Panel);
     }
@@ -2238,11 +2307,11 @@ static void PaintPanel(HWND window, HDC destination) {
 
     // 可见行范围（考虑滚动）
     int firstVisible = g_scrollTop;
-    int maxScroll = g_modCount - VISIBLE_ROWS;
+    int maxScroll = g_visibleCount - VISIBLE_ROWS;
     if (maxScroll < 0) maxScroll = 0;
     if (g_scrollTop > maxScroll) g_scrollTop = maxScroll;
     int lastVisible = firstVisible + VISIBLE_ROWS;
-    if (lastVisible > g_modCount) lastVisible = g_modCount;
+    if (lastVisible > g_visibleCount) lastVisible = g_visibleCount;
 
     // MOD 行
     for (int d = firstVisible; d < lastVisible; ++d) {
@@ -2754,13 +2823,15 @@ static void ConfirmCancel() {
     g_confirmDlg = false;
     RevertChanges();
     // 撤销改动后关闭面板
-    if (g_panel) ShowWindow(g_panel, SW_HIDE);
+    if (g_panel) {
+        QolHudMarkHiddenByMod(g_panel);  // v1.2.6: MOD 主动隐藏，防回前台误还原
+        ShowWindow(g_panel, SW_HIDE);
+    }
     g_panelVisible = false;
     g_gpCursor = -1;
     g_gpFocus = 0;
     g_gpNeedsRelease = true;
-    if (g_owner && IsWindow(g_owner)) SetForegroundWindow(g_owner);
-    Log("[ModManager] user cancelled changes, keep running\n");
+    if (g_owner && IsWindow(g_owner)) { /* 全屏模式下不抢焦点，游戏从未失去前台 */ }
 }
 
 // 关闭面板（若期间有改动则先弹自绘确认窗）
@@ -2779,12 +2850,13 @@ static void HidePanel() {
     }
 
     // 无改动：直接隐藏
+    QolHudMarkHiddenByMod(g_panel);  // v1.2.6: MOD 主动隐藏，防回前台误还原
     ShowWindow(g_panel, SW_HIDE);
     g_panelVisible = false;
     g_gpCursor = -1;
     g_gpFocus = 0;
     g_gpNeedsRelease = true;
-    if (g_owner && IsWindow(g_owner)) SetForegroundWindow(g_owner);
+    if (g_owner && IsWindow(g_owner)) { /* 全屏模式下不抢焦点 */ }
     Log("[ModManager] panel hidden\n");
 }
 
@@ -2808,11 +2880,9 @@ static bool ShowPanel() {
     g_confirmDlgRelease = true;
 
     g_owner = FindGameWindow();
-    if (g_owner) {
-        SetLastError(ERROR_SUCCESS);
-        SetWindowLongPtrW(g_panel, GWLP_HWNDPARENT,
-                          reinterpret_cast<LONG_PTR>(g_owner));
-    }
+    // v1.2.10: 移除面板 owner 绑定（GWLP_HWNDPARENT）——owned TOPMOST 面板干扰
+    // Alt+Tab 前台切换，游戏窗口切不回（切窗修复第四轮，详见 game_window.h v1.5）。
+    // g_owner 仍用于下方 anchor 定位与显示器解析，故保留赋值。
 
     RECT anchor = {};
     if (!g_owner || !GetWindowRect(g_owner, &anchor)) {
@@ -2847,9 +2917,7 @@ static bool ShowPanel() {
     int y = anchor.top + ((anchor.bottom - anchor.top) - PANEL_HEIGHT) / 2;
 
     SetWindowPos(g_panel, HWND_TOPMOST, x, y, PANEL_WIDTH, PANEL_HEIGHT,
-                 SWP_SHOWWINDOW);
-    SetForegroundWindow(g_panel);
-    SetFocus(g_panel);
+                 SWP_SHOWWINDOW | SWP_NOACTIVATE);
     InvalidateRect(g_panel, nullptr, FALSE);
     g_panelVisible = true;
     Log("[ModManager] panel shown inSave=%d\n", (int)g_inSave);
@@ -2886,7 +2954,7 @@ static LRESULT CALLBACK PanelWndProc(HWND window, UINT message,
     }
     case WM_MOUSEWHEEL: {
         short delta = (short)HIWORD(wParam);
-        int maxScroll = g_modCount - VISIBLE_ROWS;
+        int maxScroll = g_visibleCount - VISIBLE_ROWS;
         if (maxScroll < 0) maxScroll = 0;
         if (delta > 0 && g_scrollTop > 0) g_scrollTop--;
         if (delta < 0 && g_scrollTop < maxScroll) g_scrollTop++;
@@ -2958,7 +3026,7 @@ static LRESULT CALLBACK PanelWndProc(HWND window, UINT message,
         }
         if (wParam == VK_ESCAPE) { HidePanel(); return 0; }
         if (wParam == VK_UP)   { if (g_scrollTop > 0) g_scrollTop--; InvalidateRect(window, nullptr, FALSE); return 0; }
-        if (wParam == VK_DOWN) { int m = g_modCount - VISIBLE_ROWS; if (m < 0) m = 0; if (g_scrollTop < m) g_scrollTop++; InvalidateRect(window, nullptr, FALSE); return 0; }
+        if (wParam == VK_DOWN) { int m = g_visibleCount - VISIBLE_ROWS; if (m < 0) m = 0; if (g_scrollTop < m) g_scrollTop++; InvalidateRect(window, nullptr, FALSE); return 0; }
         break;
     case WM_KEYUP:
         // 选择阶段：按键已松开但不在捕获中，直接忽略
@@ -3109,11 +3177,15 @@ static bool InitPanel() {
     }
 
     g_owner = FindGameWindow();
+    // v1.2.16: 面板 hWndParent 改 nullptr——owner 绑定 + TOPMOST + v1.6 失焦渐隐
+    // （窗口保持可见但透明）= KB-075 同款切窗干扰（2026-10-06 用户实锤：
+    // 开面板后 Alt+Tab 游戏切不回；其余 6 个 HUD 均已摘除 owner 唯面板漏网）。
+    // g_owner 保留赋值仅供 anchor 定位/显示器解析。
     g_panel = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
         PANEL_CLASS, L"Village Mod Manager", WS_POPUP,
         0, 0, PANEL_WIDTH, PANEL_HEIGHT,
-        g_owner, nullptr, g_module, nullptr);
+        nullptr, nullptr, g_module, nullptr);
     if (!g_panel) {
         Log("[ModManager] CreateWindowExW failed (err=%lu)\n", GetLastError());
         DeleteObject(g_titleFont); DeleteObject(g_bodyFont); DeleteObject(g_smallFont);
@@ -3130,23 +3202,325 @@ static bool InitPanel() {
 }
 
 // ============================================================
-// 热键检测（键盘 F2 + 手柄 L1+R1）
+// QoL 快捷菜单（F1）：开关型 MOD 的轻量切换浮层
+// ============================================================
+static HWND g_quickMenu = nullptr;
+static bool g_quickMenuVisible = false;
+static bool g_quickMenuNeedsRelease = true;
+static HFONT g_quickMenuFont = nullptr;
+
+static constexpr int QM_MAX_ITEMS = 32;
+static QolQuickMenuItem g_qmItems[QM_MAX_ITEMS];
+static int g_qmCount = 0;
+    static bool g_qmDigitPrev[6] = {};
+static ULONGLONG g_qmLastPaint = 0;
+static const wchar_t* g_qmClass = L"VillageQoLQuickMenu";
+// v1.2.5: 标题与宽度测量共用同一文本（旧版测量少了“· R1 确认”导致
+// 提示被截断显示不完全）；可见项上限与高度/点击/绘制统一（9 项）
+static const wchar_t* g_qmTitle =
+    L"QoL \x5FEB\x6377\x83DC\x5355  (F2/L1+R1/Esc \x5173\x95ED \x00B7 R1 \x786E\x8BA4)";
+static constexpr int QM_VISIBLE_ITEMS = 9;
+
+static int g_qmCursor = -1;  // v1.2.1: 手柄光标（-1=未选中）
+static bool g_qmGpNeedsRelease = true;  // 手柄边沿触发
+static ULONGLONG g_qmLastNavTick = 0;  // 手柄导航防抖
+
+static LRESULT CALLBACK QmWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_ERASEBKGND) return 1;
+    if (msg == WM_LBUTTONDOWN) {
+        // v1.2.1: 鼠标点击切换开关
+        int mx = (short)LOWORD(lParam);
+        int my = (short)HIWORD(lParam);
+        if (my >= 46) {
+            int idx = (my - 46) / 32;
+            if (idx >= 0 && idx < g_qmCount && idx < 9) {
+                if (g_qmItems[idx].toggle) {
+                    g_qmItems[idx].toggle();
+                    g_qmCursor = idx;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    g_qmLastPaint = GetTickCount64();
+                }
+            }
+        }
+        return 0;
+    }
+    if (msg == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
+        HBRUSH bg = CreateSolidBrush(RGB(18, 18, 26));
+        FillRect(dc, &rc, bg);
+        DeleteObject(bg);
+        if (!g_quickMenuFont)
+            g_quickMenuFont = CreateFontW(22, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
+        HGDIOBJ oldFont = SelectObject(dc, g_quickMenuFont);
+        SetBkMode(dc, TRANSPARENT);
+        // 标题
+        SetTextColor(dc, RGB(160, 160, 170));
+        TextOutW(dc, 14, 8, g_qmTitle, (int)wcslen(g_qmTitle));
+        // 分隔线
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(50, 50, 60));
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        MoveToEx(dc, 14, 38, nullptr); LineTo(dc, rc.right - 14, 38);
+        SelectObject(dc, oldPen); DeleteObject(pen);
+        // 菜单项
+        const int qmVis = g_qmCount < QM_VISIBLE_ITEMS ? g_qmCount : QM_VISIBLE_ITEMS;
+        for (int i = 0; i < qmVis; ++i) {
+            int y = 46 + i * 32;
+            // v1.2.1: 手柄光标高亮
+            if (i == g_qmCursor) {
+                RECT hl = { 14, y - 2, rc.right - 14, y + 30 };
+                HBRUSH hb = CreateSolidBrush(RGB(40, 50, 70));
+                FillRect(dc, &hl, hb);
+                DeleteObject(hb);
+            }
+            // v1.1.4: 去掉快捷键标签，只显示名称和开关
+            wchar_t name[64];
+            MultiByteToWideChar(CP_UTF8, 0, g_qmItems[i].name, -1, name, 64);
+            SetTextColor(dc, RGB(230, 230, 230));
+            TextOutW(dc, 18, y, name, (int)wcslen(name));  // v1.1.4: 去序号后左移
+            bool on = g_qmItems[i].isOn ? g_qmItems[i].isOn() : false;
+            // v1.2.3: 开关显示改为滑块（轨道+旋钮，与主面板一致），替代文字 [开]/[关]
+            const int trackW = 44, trackH = 20;
+            const int trackX = rc.right - 14 - trackW;
+            const int trackY = y + (32 - trackH) / 2;
+            RECT track = { trackX, trackY, trackX + trackW, trackY + trackH };
+            HPEN oldPen0 = (HPEN)SelectObject(dc, GetStockObject(NULL_PEN));
+            HBRUSH trackBg = CreateSolidBrush(on ? RGB(104, 150, 88) : RGB(52, 56, 62));
+            HBRUSH oldBr = (HBRUSH)SelectObject(dc, trackBg);
+            RoundRect(dc, track.left, track.top, track.right, track.bottom, trackH, trackH);
+            SelectObject(dc, oldBr); DeleteObject(trackBg);
+            // 旋钮：开=靠右（白色），关=靠左（浅灰）
+            const int knobD = 16;
+            const int knobY = trackY + (trackH - knobD) / 2;
+            int knobX = on ? (track.right - knobD - 2) : (track.left + 2);
+            HBRUSH knobBg = CreateSolidBrush(on ? RGB(245, 245, 240) : RGB(150, 154, 160));
+            SelectObject(dc, knobBg);
+            Ellipse(dc, knobX, knobY, knobX + knobD, knobY + knobD);
+            SelectObject(dc, oldBr); DeleteObject(knobBg);
+            SelectObject(dc, oldPen0);
+        }
+        SelectObject(dc, oldFont);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    if (msg == WM_DESTROY) {
+        g_quickMenu = nullptr;
+        g_quickMenuVisible = false;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void QmCollect() {
+    g_qmCount = 0;
+    for (int i = 0; i < g_modCount && g_qmCount < QM_MAX_ITEMS; ++i) {
+        if (!g_mods[i].dllName) continue;
+        if (g_mods[i].toggle != ToggleState::Enabled &&
+            g_mods[i].toggle != ToggleState::Self) continue;
+        HMODULE h = GetModuleHandleW(g_mods[i].dllName);
+        if (!h) continue;
+        auto fn = (int (*)(QolQuickMenuItem*, int))
+            GetProcAddress(h, "QolQuickMenuItems");
+        if (!fn) continue;
+        int n = fn(&g_qmItems[g_qmCount], QM_MAX_ITEMS - g_qmCount);
+        if (n > 0) g_qmCount += n;
+    }
+    Log("[ModManager] quick menu: %d items collected\n", g_qmCount);
+}
+
+// 测量快捷菜单所需宽度（根据最长菜单项名称自适应）
+static int QmCalcWidth() {
+    if (!g_quickMenuFont)
+        g_quickMenuFont = CreateFontW(22, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+            DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
+    HDC screen = GetDC(nullptr);
+    HGDIOBJ oldFont = SelectObject(screen, g_quickMenuFont);
+    // 标题宽度（与绘制共用 g_qmTitle，保证窗口宽度 >= 实际文本宽度）
+    SIZE ts; GetTextExtentPoint32W(screen, g_qmTitle, (int)wcslen(g_qmTitle), &ts);
+    int maxW = ts.cx + 28;  // 标题 + 两侧 padding
+    // 各菜单项宽度
+    int qmVis = g_qmCount < QM_VISIBLE_ITEMS ? g_qmCount : QM_VISIBLE_ITEMS;
+    for (int i = 0; i < qmVis; ++i) {
+        wchar_t name[64];
+        MultiByteToWideChar(CP_UTF8, 0, g_qmItems[i].name, -1, name, 64);
+        SIZE ns; GetTextExtentPoint32W(screen, name, (int)wcslen(name), &ns);
+        // 名称(从18px起) + 右侧状态(76px) + padding(28px)
+        int itemW = 18 + ns.cx + 76 + 28;
+        if (itemW > maxW) maxW = itemW;
+    }
+    SelectObject(screen, oldFont);
+    ReleaseDC(nullptr, screen);
+    if (maxW < 300) maxW = 300;  // 最小宽度
+    return maxW;
+}
+
+static void QmShow() {
+    QmCollect();
+    const int qmVis = g_qmCount < QM_VISIBLE_ITEMS ? g_qmCount : QM_VISIBLE_ITEMS;
+    int h = 46 + qmVis * 32 + 14;
+    if (h < 90) h = 90;
+    int w = QmCalcWidth();
+    int sx = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
+    int sy = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
+    if (!g_quickMenu) {
+        WNDCLASSW wc = {};
+        wc.lpfnWndProc = QmWndProc;
+        wc.hInstance = g_module;
+        wc.lpszClassName = g_qmClass;
+        RegisterClassW(&wc);
+        g_quickMenu = CreateWindowExW(
+            // v1.2.6: 补 WS_EX_TOOLWINDOW——浮层菜单不是工具窗口会被
+            // QolFindGameWindow 枚举误认成游戏窗口（F2 闪现即隐藏事故根因），
+            // 顺带从 Alt+Tab 列表移除
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            g_qmClass, L"", WS_POPUP,
+            sx, sy, w, h, nullptr, nullptr, g_module, nullptr);
+        if (!g_quickMenu) { Log("[ModManager] quick menu create failed\n"); return; }
+        SetLayeredWindowAttributes(g_quickMenu, RGB(0, 0, 0), 220, LWA_ALPHA);
+    }
+    SetWindowPos(g_quickMenu, HWND_TOPMOST, sx, sy, w, h,
+                 SWP_NOZORDER | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    g_quickMenuVisible = true;
+    memset(g_qmDigitPrev, 0, sizeof(g_qmDigitPrev));
+    g_qmLastPaint = GetTickCount64();
+    Log("[ModManager] quick menu shown (%d items, %dx%d)\n", g_qmCount, w, h);
+}
+
+static void QmHide() {
+    if (g_quickMenu) {
+        QolHudMarkHiddenByMod(g_quickMenu);  // v1.2.6: MOD 主动隐藏，防回前台误还原
+        ShowWindow(g_quickMenu, SW_HIDE);
+    }
+    g_quickMenuVisible = false;
+}
+
+static void PollQuickMenu() {
+    // F2 或手柄 L1+R1：快捷菜单（开关型 MOD 切换）
+    bool f2 = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+    bool gpLR = PollGamepadL1R1();
+    if (g_quickMenuNeedsRelease) {
+        if (!f2 && !gpLR) g_quickMenuNeedsRelease = false;
+    } else if (f2 || gpLR) {
+        g_quickMenuNeedsRelease = true;
+        if (g_quickMenuVisible) { QmHide(); return; }
+        QmShow();
+        return;
+    }
+    if (!g_quickMenuVisible || !g_quickMenu) return;
+
+    // v1.2.1: 手柄导航（D-pad 上下选 + R1/Cross 确认）
+    {
+        ULONGLONG nowTick = GetTickCount64();
+        bool canNav = (nowTick - g_qmLastNavTick) > 150;  // 150ms 防抖
+        bool dpadUp = AnyGpPressed(GP_DPAD_UP);
+        bool dpadDown = AnyGpPressed(GP_DPAD_DOWN);
+        bool r1 = AnyGpPressed(GP_R1);
+        bool cross = AnyGpPressed(GP_CROSS);
+        bool circle = AnyGpPressed(GP_CIRCLE);
+
+        // Circle 关闭
+        if (circle) {
+            if (g_qmGpNeedsRelease) {
+                if (!circle) g_qmGpNeedsRelease = false;
+            } else {
+                QmHide();
+                g_qmGpNeedsRelease = true;
+                return;
+            }
+        }
+
+        if (g_qmGpNeedsRelease) {
+            if (!dpadUp && !dpadDown && !r1 && !cross && !circle)
+                g_qmGpNeedsRelease = false;
+        } else if (canNav) {
+            if (dpadUp) {
+                if (g_qmCursor < 0) g_qmCursor = 0;
+                else if (g_qmCursor > 0) g_qmCursor--;
+                g_qmLastNavTick = nowTick;
+                g_qmGpNeedsRelease = true;
+                InvalidateRect(g_quickMenu, nullptr, FALSE);
+            } else if (dpadDown) {
+                int maxIdx = (g_qmCount < 6) ? g_qmCount - 1 : 5;
+                if (g_qmCursor < 0) g_qmCursor = 0;
+                else if (g_qmCursor < maxIdx) g_qmCursor++;
+                g_qmLastNavTick = nowTick;
+                g_qmGpNeedsRelease = true;
+                InvalidateRect(g_quickMenu, nullptr, FALSE);
+            } else if ((r1 || cross) && g_qmCursor >= 0 && g_qmCursor < g_qmCount && g_qmCursor < 6) {
+                if (g_qmItems[g_qmCursor].toggle) {
+                    g_qmItems[g_qmCursor].toggle();
+                    InvalidateRect(g_quickMenu, nullptr, FALSE);
+                    g_qmLastPaint = GetTickCount64();
+                }
+                g_qmGpNeedsRelease = true;
+            }
+        }
+    }
+
+    // Esc 关闭（边沿）
+    static bool escPrev = false;
+    bool esc = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+    if (esc && !escPrev) { QmHide(); escPrev = true; return; }
+    if (!esc) escPrev = false;
+
+    // 定时刷新状态显示（~300ms）
+    ULONGLONG now = GetTickCount64();
+    if (now - g_qmLastPaint > 300) {
+        InvalidateRect(g_quickMenu, nullptr, FALSE);
+        g_qmLastPaint = now;
+    }
+}
+
+static void PumpQuickMenu() {
+    if (!g_quickMenu) return;
+    if (!QolGameInForeground()) { QolHudGuardVisibility(g_quickMenu); return; }  // v1.6: 失焦守卫兜底（alpha 渐隐）后 pump 静默
+    MSG msg = {};
+    while (PeekMessageW(&msg, g_quickMenu, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
+// 手柄 L3+R3 同时按下检测（用于打开 MOD 管理面板；v1.2.4 应用户要求
+// L2+R2+↓ → L3+R3，因 L1+R1 已被快捷菜单占用）
+static bool PollGamepadL3R3() {
+    if (AnyGpPressed(GP_L3) && AnyGpPressed(GP_R3)) return true;
+    // 路径 3: joyGetPosEx 同步回退（老设备；按钮位与 XInput 不同且驱动
+    // 映射各异，保留旧 L2+R2+↓ 组合作为该路径的兼容开关键）
+    if (!g_xinputReady && !(g_hidReady && g_gpHID.connected.load(std::memory_order_relaxed))) {
+        JOYINFOEX ji = {};
+        ji.dwSize = sizeof(ji);
+        ji.dwFlags = JOY_RETURNBUTTONS | JOY_RETURNPOV;
+        if (joyGetPosEx(JOYSTICKID1, &ji) == JOYERR_NOERROR) {
+            DWORD pov = ji.dwPOV;
+            bool dpadDown = (pov >= 13500 && pov < 22500);
+            return (ji.dwButtons & 0x040) && (ji.dwButtons & 0x080) && dpadDown;
+        }
+    }
+    return false;
+}
+
+// ============================================================
+// 热键检测（键盘 F9 + 手柄 L3+R3）
+// 注：v1.2.3 应用户要求 F11 → F9；v1.2.4 应用户要求手柄 L2+R2+↓ → L3+R3
 // ============================================================
 static void PollHotkey() {
     if (g_recModIdx >= 0) return;  // 录制中禁用热键，避免面板意外关闭
 
-    // 键盘 F2
-    bool f2down = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+    // 键盘 F9
+    bool f9down = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
     bool kbdPressed = false;
     if (g_needsRelease) {
-        if (!f2down) g_needsRelease = false;
-    } else if (f2down) {
+        if (!f9down) g_needsRelease = false;
+    } else if (f9down) {
         kbdPressed = true;
         g_needsRelease = true;
     }
 
-    // 手柄 L1+R1
-    bool gpDown = PollGamepadL1R1();
+    // 手柄 L3+R3
+    bool gpDown = PollGamepadL3R3();
     bool gpPressed = false;
     if (g_gamepadNeedsRelease) {
         if (!gpDown) g_gamepadNeedsRelease = false;
@@ -3163,6 +3537,7 @@ static void PollHotkey() {
 // ============================================================
 static void PumpPanel() {
     if (!g_panel) return;
+    if (!QolGameInForeground()) { QolHudGuardVisibility(g_panel); return; }  // v1.6: 失焦守卫兜底（alpha 渐隐）后 pump 静默
     MSG msg = {};
     while (PeekMessageW(&msg, g_panel, 0, 0, PM_REMOVE)) {
         TranslateMessage(&msg);
@@ -3180,6 +3555,7 @@ static void RequestRestart() {
         InvalidateRect(g_panel, nullptr, FALSE);
         UpdateWindow(g_panel);
         Sleep(1200);
+        QolHudMarkHiddenByMod(g_panel);  // v1.2.6: MOD 主动隐藏，防回前台误还原
         ShowWindow(g_panel, SW_HIDE);
         g_panelVisible = false;
     }
@@ -3253,8 +3629,7 @@ static void RequestRestart() {
 // ============================================================
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("modmanager");
-    if (!SelfVerifyInit("modmanager")) return;
-    Log("[ModManager] mod_init — v1.1.2 build 25094764 v1.09\n");
+    Log("[ModManager] mod_init — v1.2.5 build 25311578 v1.20\n");
 
     // 初始化手柄输入（三路混合：XInput 线程 + HID 直读线程 + joyGetPosEx 回退）
     InitGamepad();
@@ -3292,6 +3667,7 @@ extern "C" __declspec(dllexport) void mod_tick(void) {
         if (g_inSave) Log("[ModManager] entered save, toggles locked\n");
     }
     PollHotkey();
+    PollQuickMenu();
     // 手柄改键录制轮询（面板可见且正在录制时）
     if (g_panelVisible && g_recModIdx >= 0) {
         PollGamepadForRecording();
@@ -3301,11 +3677,20 @@ extern "C" __declspec(dllexport) void mod_tick(void) {
         PollGamepadNav();
     }
     PumpPanel();
+    PumpQuickMenu();
+    // v1.2.6: 失焦隐藏面板/快捷菜单（不飘桌面）
+    QolHudGuardVisibility(g_panel);
+    QolHudGuardVisibility(g_quickMenu);
 }
 
 extern "C" __declspec(dllexport) void unload(void) {
     Log("[ModManager] unload\n");
     ShutdownGamepad();
+    if (g_quickMenu && IsWindow(g_quickMenu)) {
+        DestroyWindow(g_quickMenu);
+        g_quickMenu = nullptr;
+    }
+    if (g_quickMenuFont) { DeleteObject(g_quickMenuFont); g_quickMenuFont = nullptr; }
     if (g_panel && IsWindow(g_panel)) {
         DestroyWindow(g_panel);
         g_panel = nullptr;
