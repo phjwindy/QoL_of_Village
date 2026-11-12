@@ -1,0 +1,76 @@
+name: Publish v1.30 Release
+
+# 用户 2026-11-13 00:52 逐项选择：通道 = GitHub Actions 自动建；
+# tag = 沿用已存在的 v1.30_releasev2（指向 3548a5a，不移动、不重建）。
+# 用仓库内置 GITHUB_TOKEN，不需要任何 PAT / 2FA 交互；SSH push 只负责推这个文件。
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/publish_release_v130.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Write release notes
+        run: |
+          cat > /tmp/release_body.md <<'NOTES_EOF'
+          作者：PHJ&消失的清风
+          适配：Steam build 25640656（v1.30）
+          GitHub：https://github.com/phjwindy/QoL_of_Village
+          小黑盒发布页：https://www.xiaoheihe.cn/app/bbs/link/195388113
+
+          ⚠️ 本 MOD 合集仅适配游戏 v1.30 版本（build 25640656），其他版本请勿使用，可能导致功能异常或存档损坏。
+
+          MOD 列表：
+
+          ModManager —— MOD 管理器：F9 面板查看/启停/改键，F2 快捷菜单
+          AutoHarvest —— 自动采集树液：对箱子按 F4 设为收集箱并开始
+          ChestSort —— 一键收纳：按 4 把背包物品放进附近箱子
+          Sower —— 范围播种：按 5 循环切换 1x1→3x3→5x5
+          CameraZoom —— 视野切换：F7 原版↔2 倍
+          AutoFish —— 自动钓鱼：上钩自动收杆、循环抛竿，可屏蔽垃圾
+          HuntOneShot —— 狩猎助手：一击必杀默认开启，按 F6 关闭
+          SaveGuard —— 存档巡检与净化：被动运行，自动修复悬垂引用等坏档病灶
+          EyeFix —— 正常眼：F2 菜单开关
+          TimeFreeze —— 时间冻结：F2 菜单开关，睡觉自动解冻
+          AutoPet —— 自动抚摸动物：每天自动抚摸所有家畜
+          BirthdayReminder —— NPC 生日提醒：HUD 显示
+          MineHelper —— 下矿助手：敲 5 块石头出下层出口
+          MonsterMark —— 夜间地图标记：老鼠/宝箱/书籍/齿轮
+          Scarecrow —— 稻草人与洒水器可同格
+          SelfServiceStore —— 商店全天营业
+          SickleHarvest —— 镰刀范围收割 + 摇果树
+
+          安装方法见包内「MOD使用说明.txt」，也可双击 install.bat 一键安装。
+          已知问题见仓库 README。
+          转载或分享时请注明出处。
+          NOTES_EOF
+          wc -c /tmp/release_body.md
+
+      - name: Create or update Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG='v1.30_releasev2'
+          TITLE='静谧田园 QoL MOD 合集 v1.30_releasev2'
+          ZIP='releases/Village in the Shade QOLv1.30_releasev2.zip'
+          test -f "$ZIP"
+          echo "ZIP_SIZE=$(stat -c%s "$ZIP")"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'Release already exists -> replace asset only'
+            gh release upload "$TAG" "$ZIP" --clobber
+          else
+            echo 'Creating release'
+            gh release create "$TAG" --title "$TITLE" --notes-file /tmp/release_body.md "$ZIP"
+          fi
+          gh release view "$TAG" --json tagName,name,url,assets
