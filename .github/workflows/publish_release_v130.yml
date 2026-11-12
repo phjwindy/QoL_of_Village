@@ -1,8 +1,7 @@
 name: Publish v1.30 Release
 
-# 用户 2026-11-13 00:52 逐项选择：通道 = GitHub Actions 自动建；
-# tag = 沿用已存在的 v1.30_releasev2（指向 3548a5a，不移动、不重建）。
-# 用仓库内置 GITHUB_TOKEN，不需要任何 PAT / 2FA 交互；SSH push 只负责推这个文件。
+# Creates the v1.30 Release and uploads the zip stored in releases/.
+# Triggered when this file is pushed, or manually via workflow_dispatch.
 on:
   push:
     branches: [master]
