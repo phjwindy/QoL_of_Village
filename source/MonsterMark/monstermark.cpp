@@ -1,4 +1,18 @@
-// monstermark.cpp —— MonsterMark: Ghost Rat / Treasure Box 地图标记 (v1.0.50 正式版：时间链修复+夜测通过)
+// monstermark.cpp —— MonsterMark: Ghost Rat / Treasure Box 地图标记 (v1.0.60 正式版)
+//
+// v1.0.63（2026-10-17 凌晨，玩家实测修复）：齿轮 collected 真解析——
+//   实测 dump 证明齿轮模板对象步长 0xF0，v1.0.61 读 P2+0x2B0 越界到邻居对象
+//   → [24100,24150) 恒不命中 → 兜底全显示（已收集的齿轮也画图标=空标依旧）。
+//   修正：按游戏 0x2857B0 拾取链原样——key=[P2+0]→容器+0x58 哈希查 value
+//   → flagIdx=*(int32*)(value+0xD0)；齿轮不做「今晚放置」过滤（常驻拾取物）。
+//
+// v1.0.60（2026-10-17 凌晨，用户反馈修复）：恢复"今晚放置"书本过滤——
+//   症状：地图有图标但当晚实地无物可捡（anchor_stamps=70 全显示）。
+//   根因：v1.0.34 决策"全部显示"（当时认为 placed 不可靠）——已被
+//   FN-011（0x272400 放置主循环反汇编实锤）推翻：flagIdx2 门控可靠。
+//   修复：书本锚点启用 g_nightBookPlaced 真数据过滤（未收集且今晚放置
+//   才显示）；齿轮仍保守全显示（暂无可靠 placed 数据源，行为不变）；
+//   build 失败时回退全显示（g_nightFilterValid 防护，零误杀风险）。
 //
 // v1.0.36: 停用书/齿轮锚点标记（NightScanAnchors 不再调用）——0x1C1A00
 // 无法区分"锚点有定义"与"今晚实际生成"，用户实测仍有空标（标识 3/4 无
@@ -12,15 +26,17 @@
 // 本文件提供 .inl 所需的全部外部依赖桩函数。
 // .inl 在文件末尾通过 #include 引入。
 
-#define MONSTERMARK_VERSION L"v1.0.50"
+#define MONSTERMARK_VERSION L"v1.1.0"   // v1.1.0：书/机件标记改由活体枚举驱动（FN-023），锚点查询退役
 
 #include <windows.h>
+#include "obs.h"              // v1.6.x: 统一观测层（AI 可读寄存器 + toast）
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <atomic>
 #include <cmath>
+#include "selftest.h"   // 结构化自检上报
 #include <new>
 
 // ============================================================
@@ -36,17 +52,13 @@ using u32 = std::uint32_t;
 #include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
 #include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
 #include "hot_config.h"
+#include "quickmenu.h"     // v1.0.58: F2 快捷菜单项（书/齿轮显示开关）
 
 // MonsterMark 日志开关：诊断版开启（已验证正常后关闭）
-// #define MONSTERMARK_LOGGING  // v1.0.50 正式版关闭（诊断能力保留在源码，夜间标记复发时重开宏重编即可）
-#ifdef MONSTERMARK_LOGGING
-  // 使用 QoL_Shared 的日志系统
-#else
-  #define LogOpen(x)  ((void)0)
-  #define Log(...)    ((void)0)
-  #define LogV(...)   ((void)0)
-  #define LogClose()  ((void)0)
-#endif
+// 日志开关：v1.0.61-diag 临时开启（验证齿轮 placed 过滤实际效果，
+// 拿 [filter]/gear container 行数据；转正时重新注释）
+// 日志运行时开关（2026-10-24）：编译期宏退役，改由 QoL_Shared 运行时门控。
+// 开启方式：游戏根 qol_log.cfg 写 level=1（约 1s 生效，免重编免重启）；缺省/level=0 为静默。
 
 // ============================================================
 // g_supportedExe — 新 build 指纹验证
@@ -56,7 +68,7 @@ static bool g_supportedExe = false;
 // ============================================================
 // RVA_GAME_ROOT — .inl 通过 RVA_GAME_ROOT 引用（与 ChestSort 一致）
 // ============================================================
-static constexpr uintptr_t RVA_GAME_ROOT = 0x10FCBB0;  // build 25311578 (v1.20)
+static constexpr uintptr_t RVA_GAME_ROOT = 0x111cc90;  // build 25311578 (v1.20)
 
 // ============================================================
 // IsReadable — 内存可读检查（与 dinput8.cpp 一致）
@@ -219,7 +231,7 @@ static bool VerifyExeBuild() {
     }
 
     LARGE_INTEGER fileSize;
-    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart != 18305544) {
+    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart != 18438664) {
         CloseHandle(hFile);
         return false;
     }
@@ -249,17 +261,17 @@ static bool VerifyExeBuild() {
     BCryptDestroyHash(hHash);
     BCryptCloseAlgorithmProvider(hAlg, 0);
 
-    // build 25311578 (v1.20) SHA-256
+    // build 25640656 (2026-10-27 免费更新2) SHA-256
     static const unsigned char expected[32] = {
-        0xAC, 0x7D, 0x95, 0x5B, 0xAA, 0x91, 0x59, 0x29,
-        0xB1, 0x85, 0xDF, 0x85, 0xCF, 0xA1, 0x3F, 0x7E,
-        0x81, 0xAD, 0x57, 0xA9, 0xC6, 0x8F, 0x30, 0x8D,
-        0xA7, 0x69, 0x73, 0x97, 0x75, 0x86, 0x9A, 0x05
+        0x97, 0x9A, 0xEB, 0xE3, 0x1B, 0x42, 0xD1, 0x81,
+        0xEE, 0x92, 0xE9, 0xDB, 0x00, 0x86, 0xF2, 0x2F,
+        0x65, 0xF2, 0x21, 0x30, 0x29, 0x47, 0x1A, 0x50,
+        0x72, 0x3F, 0x61, 0xEA, 0xA9, 0x31, 0x19, 0xA5
     };
 
     bool match = memcmp(hash, expected, sizeof(hash)) == 0;
     if (match) {
-        Log("[MonsterMark] village.exe verified: build 25311578 (1.20)\n");
+        Log("[MonsterMark] village.exe verified: build 25640656\n");
     } else {
         Log("[MonsterMark] village.exe SHA-256 mismatch; feature disabled\n");
     }
@@ -274,6 +286,9 @@ static bool InstallNightAnchorPosHook();
 static void NightDiagScanCallbacks();
 static void NightDiagEnumerateHashTable();
 void NightHotConfigRegisterAll();  // HotConfig 注册（实现在 .inl 末尾）
+// v1.0.58: F2 菜单书/齿轮开关（实现在 .inl 末尾）
+static bool NightBookGearIsOn();
+static void NightBookGearToggle();
 
 // ============================================================
 // 插件入口
@@ -281,6 +296,9 @@ void NightHotConfigRegisterAll();  // HotConfig 注册（实现在 .inl 末尾�
 
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("monstermark");
+    qol::obs::Init(nullptr);  // v1.6.x: 统一观测层接入
+    qol::obs::SetInt("monstermark", "ready", 1);
+    qol::obs::EventF(1, 2500, L"[MonsterMark] 已加载：观测层接入");
     Log("[MonsterMark] mod_init — build 25311578 v1.20 %S\n", MONSTERMARK_VERSION);
     QolRegisterHotKey("monstermark", "none");  // 无热键（自动生效）
 
@@ -302,9 +320,13 @@ extern "C" __declspec(dllexport) void mod_init(void) {
     bool ready = InstallNightMapMarkers();
     Log("[MonsterMark] InstallNightMapMarkers = %s\n", ready ? "OK" : "FAILED");
     if (ready) {
-        bool anchorReady = InstallNightAnchorPosHook();
-        Log("[MonsterMark] InstallNightAnchorPosHook = %s\n",
-            anchorReady ? "OK" : "FAILED");
+        // v1.1.0：书/机件显示源已改为活体枚举（NightScanLiveMarks）。
+        //   旧锚点查询 0x1C1A00（NightScanAnchors）已退役、全库无人调用；
+        //   此处仅保留签名探针。其签名含随版本变化的 disp32，在 build 25640656
+        //   必然 mismatch，但已不参与任何功能 —— 属无害噪音，非故障。
+        bool anchorProbe = InstallNightAnchorPosHook();
+        Log("[MonsterMark] NightAnchorPos probe(legacy/retired, no effect) = %s\n",
+            anchorProbe ? "OK" : "mismatch(benign)");
     }
 }
 
@@ -321,9 +343,25 @@ extern "C" __declspec(dllexport) void mod_tick(void) {
     HotConfig_Poll();  // 每 ~1s 检查 QoL_hot.json mtime，变化则重载
 }
 
+// ============================================================
+// v1.0.58: F2 快捷菜单项 —— 书/齿轮标记显示开关
+// 老鼠/宝箱怪标记常规开启，不在此菜单（始终显示）。
+// 实现在 .inl 中（NightBookGearIsOn/NightBookGearToggle）。
+// ============================================================
+extern "C" __declspec(dllexport) int QolQuickMenuItems(
+        QolQuickMenuItem* items, int maxItems) {
+    int n = 1;  // 本 MOD 提供 1 个开关项
+    if (items && maxItems >= 1)
+        items[0] = { "书/齿轮标记", NightBookGearIsOn, NightBookGearToggle };
+    return n;
+}
+
 BOOL APIENTRY DllMain(HMODULE /*h*/, DWORD reason, LPVOID /*lpReserved*/) {
     if (reason == DLL_PROCESS_ATTACH) {
         // 初始化推迟到 mod_init
+    }
+    else if (reason == DLL_PROCESS_DETACH) {
+        qol::obs::Shutdown();  // v1.6.x: 解观测层映射（仅本 DLL 视图）
     }
     return TRUE;
 }

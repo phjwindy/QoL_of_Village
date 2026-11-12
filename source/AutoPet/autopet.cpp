@@ -103,6 +103,7 @@
 // 作者：PHJ&消失的清风，转载或分享时请注明出处。
 
 #include <windows.h>
+#include "obs.h"              // v1.6.x: 统一观测层（AI 可读寄存器 + toast）
 #include <cstdint>
 #include <cstring>
 #include <atomic>
@@ -111,6 +112,7 @@
 #include <cmath>
 
 #include "logging.h"
+#include "exe_guard.h"   // v-local: 统一游戏版本闸门
 #include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
 #include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
 #include "hot_config.h"
@@ -123,15 +125,8 @@
 // ============================================================
 // 日志开关（正式版保留关键日志，方便实测验证）
 // ============================================================
-// #define AUTOPET_LOGGING   // v0.6.10 转正：日志关闭（定位时取消注释重编）
-#ifdef AUTOPET_LOGGING
-  // 使用共享框架日志
-#else
-  #define LogOpen(x)  ((void)0)
-  #define Log(...)    ((void)0)
-  #define LogV(...)   ((void)0)
-  #define LogClose()  ((void)0)
-#endif
+// 日志运行时开关（2026-10-24）：编译期宏 AUTOPET_LOGGING 退役，改由 QoL_Shared 运行时门控。
+// 开启方式：游戏根 qol_log.cfg 写 level=1（约 1s 生效，免重编免重启）；缺省/level=0 为静默。
 
 // [diag] 诊断日志门控（默认关）；调试时 #define DIAG_AUTOPET 1 开启
 #ifndef DIAG_AUTOPET
@@ -146,14 +141,14 @@ static constexpr const char* AUTOPET_VERSION = "v0.6.3";
 // 逆向定位的 RVA（build 25311578）
 namespace rva {
     // CLivestockStatus vtable（主继承层级，有最多槽位）
-    static volatile uintptr_t LIVESTOCK_VTABLE = 0xE29CD8;
+    static volatile uintptr_t LIVESTOCK_VTABLE = 0xE44350;   // 20261028: RTTI 链反查(CLivestockStatus TD 0x108f410→COL 0xED05A0→vtable 唯一)
     // CCreatureStatus vtable
-    static volatile uintptr_t CREATURE_VTABLE = 0xE27A58;
+    static volatile uintptr_t CREATURE_VTABLE = 0xE42340;   // 20261028: RTTI 反查(CCreatureStatus→COL 0xECCC28)
     // CCom_Unit_Livestock vtable
-    static volatile uintptr_t COM_UNIT_LIVESTOCK_VTABLE = 0xE37088;
+    static volatile uintptr_t COM_UNIT_LIVESTOCK_VTABLE = 0xE51C18;   // 20261028: RTTI 反查(CCom_Unit_Livestock→COL 0xEE6D50)
 
     // ---- 世界上下文（复用 ChestSort 链路；v0.5.6 恢复地图链作为游戏内门禁） ----
-    static volatile uintptr_t GAME_ROOT = 0x10FCBB0;  // 全局根指针
+    static volatile uintptr_t GAME_ROOT = 0x111CC90;  // 全局根指针（20261028: build 25640656，对齐 QoL_Shared/state.cpp）
     static volatile uintptr_t ROOT_PLAYER_OFFSET = 0x208;
     static volatile uintptr_t ROOT_MAP_OWNER_OFFSET = 0x268;
     static volatile uintptr_t MAP_INFO_OFFSET = 0x0d8;
@@ -162,10 +157,11 @@ namespace rva {
     static volatile uintptr_t PLAYER_OBJECT_STATUS_OFFSET = 0x32b8;
     static volatile uintptr_t OBJECT_POSITION_OFFSET = 0x0f0;
 
-    // v0.4.6: livestockList_ 链表偏移（CSaveData + 0x3430）
-    // 参考实现 BigL233 auto_pet.inl L147: AUTO_PET_LIVESTOCK_LIST_OFFSET = 0x3430
+    // v0.4.6: livestockList_ 链表偏移（CSaveData + 0x3438；build 25640656 起，
+    //         旧版为 0x3430 —— 新版在 0x3410 前插入 8 字节，其后字段整体 +8）
+    // 参考实现 BigL233 auto_pet.inl L147: AUTO_PET_LIVESTOCK_LIST_OFFSET = 0x3430（旧版）
     // save = root+0x208（与 ChestSort 的 player 同一指针，因为 player = save 对象）
-    static volatile uintptr_t LIVESTOCK_LIST_OFFSET = 0x3430;
+    static volatile uintptr_t LIVESTOCK_LIST_OFFSET = 0x3438;
     static constexpr size_t MAX_LIVESTOCK_LIST = 256;  // 链表节点上限（游戏限制 ~128 只）
     static constexpr int MAX_PET_CANDIDATES = 256;     // v0.5.4: 候选数组容量 32→128（用户上百只动物只摸 32 只）
 
@@ -184,11 +180,11 @@ namespace rva {
 
     // ---- v0.3.0 新增：原生结算函数（AOB + 脚本锚点交叉验证） ----
     // LOVE_SETTER：ScriptCommand::LivestockSetLoveRate 交叉验证（v1.20: 0x4AE4E7 调用 -> 0x2A0D50）
-    static volatile uintptr_t LOVE_SETTER = 0x2A0D50;
+    static volatile uintptr_t LOVE_SETTER = 0x2A9960;   // 20261028: AOB 0/64 唯一命中
     // RATE_MODIFIER：ScriptCommand::LivestockGetLoveRate 交叉验证（v1.20: 0x4AE4BE 调用 -> 0x13B2C0）
-    static volatile uintptr_t RATE_MODIFIER = 0x13B2C0;
+    static volatile uintptr_t RATE_MODIFIER = 0x13DD30;  // 20261028: AOB 二候选深比对 1/236 定案(0x13DC40 为 89/236 排除)
     // STATUS_SETTER：map 写入语义（写 status+0x10 的 "caress" 键），16 字节签名 + prologue 验证
-    static volatile uintptr_t STATUS_SETTER = 0x158C50;
+    static volatile uintptr_t STATUS_SETTER = 0x15B9A0;  // 20261028: AOB 0/64 唯一命中
 }
 
 // ============================================================
@@ -503,20 +499,30 @@ static int CollectNearbyLivestock(void* save, const float* playerPos,
     // 每轮扫描开始前重置区域缓存
     FastRegionReset();
 
-    // 读取 livestockList_ 链表（save + 0x3430）
-    // 布局：[void* sentinel] [u64 declared_count]
+    // 读取 livestockList_ 链表（build 25640656: save + 0x3438，旧 0x3430）
+    // 原生代码（FUN_140279c90）只用「环形链表 + 哨兵指针」迭代，不读计数字段：
+    //     sentinel = *(save + OFFSET);  node = *sentinel;
+    //     do { ... node = *node; } while (node != sentinel);
+    // 因此空表判据改为 *sentinel == sentinel，计数器仅当"合法上限"用。
+    // 这样做的好处：存档结构换版导致 +8 处字段移位/换语义时不会误判成"瞬态不可读"
+    // 而让抚摸永久失效（v0.6.13）。
     uintptr_t listAddr = (uintptr_t)save + rva::LIVESTOCK_LIST_OFFSET;
-    if (!IsReadable((void*)listAddr, sizeof(void*) + sizeof(uint64_t))) return -1;
+    if (!IsReadable((void*)listAddr, sizeof(void*))) return -1;
 
     void* sentinel = *reinterpret_cast<void**>(listAddr);
-    uint64_t declared = *reinterpret_cast<const uint64_t*>(listAddr + sizeof(void*));
-    // v0.5.5: -1=瞬态不可读（重试）；declared==0=无动物（合法，返回 0）
-    if (!sentinel || declared > rva::MAX_LIVESTOCK_LIST) return -1;
-    if (declared == 0) return 0;
-    if (!IsReadable(sentinel, sizeof(void*) * 2)) return -1;
+    if (!sentinel || !IsReadable(sentinel, sizeof(void*) * 2)) return -1;
 
-    // 链表第一个节点
+    // 链表第一个节点；回到哨兵即空表（权威判据，与原生循环一致）
     void* node = *reinterpret_cast<void**>(sentinel);
+    if (node == sentinel) return 0;
+
+    uint64_t declared = 0;
+    if (IsReadable((void*)(listAddr + sizeof(void*)), sizeof(uint64_t))) {
+        declared = *reinterpret_cast<const uint64_t*>(listAddr + sizeof(void*));
+    }
+    const uint64_t scanLimit =
+        (declared > 0 && declared <= rva::MAX_LIVESTOCK_LIST)
+            ? declared : rva::MAX_LIVESTOCK_LIST;
     void* previous = sentinel;
 
     int n = 0;
@@ -524,7 +530,7 @@ static int CollectNearbyLivestock(void* save, const float* playerPos,
     int diagLogged = 0;
     size_t visited = 0;
 
-    while (visited < (size_t)declared && n < maxOut) {
+    while (visited < (size_t)scanLimit && n < maxOut) {
         if (!node || node == sentinel) break;
         if (!IsReadable(node, sizeof(void*) * 3)) break;
         // back-pointer 一致性校验
@@ -787,35 +793,23 @@ static void PetHudUpdate(DWORD durationMs = 5000) {
     if (!g_petHudWindow && !PetHudInit()) return;
     if (!g_petHudWindow) return;
 
-    // v0.5.7: 锚定游戏主窗口所在显示器（旧实现跟随前台窗口，
-    // alt-tab 后 HUD 跳到其他屏幕）
-    struct FindGameCtx { DWORD pid; HWND found; };
-    FindGameCtx fgc = { GetCurrentProcessId(), nullptr };
-    EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
-        auto* ctx = reinterpret_cast<FindGameCtx*>(lp);
-        DWORD pid = 0;
-        GetWindowThreadProcessId(hwnd, &pid);
-        if (pid != ctx->pid) return TRUE;
-        if (!IsWindowVisible(hwnd)) return TRUE;
-        if (GetWindow(hwnd, GW_OWNER) != nullptr) return TRUE;
-        LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        if (exStyle & WS_EX_TOOLWINDOW) return TRUE;  // 我们自己的 HUD
-        ctx->found = hwnd;
-        return FALSE;
-    }, reinterpret_cast<LPARAM>(&fgc));
-
-    HMONITOR mon = fgc.found
-        ? MonitorFromWindow(fgc.found, MONITOR_DEFAULTTONEAREST)
-        : MonitorFromWindow(QolFindGameWindow(), MONITOR_DEFAULTTOPRIMARY);
-    MONITORINFO mi = {};
-    mi.cbSize = sizeof(mi);
-    if (!GetMonitorInfoW(mon, &mi)) {
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
-    }
+    // v0.6.4【KB-113】原实现按「显示器工作区」左中定位，窗口化/4K DPI 下
+    //   HUD 会飞出游戏框外。改为锚定游戏客户区，找不到才回退工作区。
     const int width = 200;
     const int height = 40;
-    const int x = mi.rcWork.left + 24;
-    const int y = mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top - height) / 2;
+    int x = 24, y = 0;
+    int cx = 0, cy = 0, cw = 0, ch = 0;
+    if (QolGetClientBox(&cx, &cy, &cw, &ch)) {
+        x = cx + 24;
+        y = cy + (ch - height) / 2;
+        if (y + height > cy + ch - 8) y = cy + ch - height - 8;
+        if (y < cy + 8) y = cy + 8;
+    } else {
+        RECT work = {};
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+        x = work.left + 24;
+        y = work.top + (work.bottom - work.top - height) / 2;
+    }
     SetWindowPos(g_petHudWindow, HWND_TOPMOST, x, y, width, height,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(g_petHudWindow, nullptr, TRUE);
@@ -1091,13 +1085,21 @@ static bool AutoPetLoadConfig(bool verbose) {
 
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("autopet");
+    qol::obs::Init(nullptr);  // v1.6.x: 统一观测层接入
+    qol::obs::SetInt("autopet", "ready", 1);
+    qol::obs::EventF(1, 2500, L"[AutoPet] \u5DF2\u542F\u7528 \u00B7 \u72B6\u6001\u63D0\u793A\u5DF2\u63A5\u5165");
+    // v-local：游戏版本闸门（village.exe 非 v1.20 build 25311578 则不启用）
+    if (!qol::ExeBuildSupported()) {
+        Log("[AutoPet] 游戏版本不匹配（非 v1.20 build 25311578）→ 本 MOD 不启用\n");
+        return;
+    }
     Log("[autopet] mod_init() called");
 
     // ---- HotConfig 热调参注册 ----
-    HotConfig_Register("autopet", (void*)&rva::LIVESTOCK_VTABLE, "rva_LIVESTOCK_VTABLE", HOT_RVA, 0xE29CD8);
-    HotConfig_Register("autopet", (void*)&rva::CREATURE_VTABLE, "rva_CREATURE_VTABLE", HOT_RVA, 0xE27A58);
-    HotConfig_Register("autopet", (void*)&rva::COM_UNIT_LIVESTOCK_VTABLE, "rva_COM_UNIT_LIVESTOCK_VTABLE", HOT_RVA, 0xE37088);
-    HotConfig_Register("autopet", (void*)&rva::GAME_ROOT, "rva_GAME_ROOT", HOT_RVA, 0x10FCBB0);
+    HotConfig_Register("autopet", (void*)&rva::LIVESTOCK_VTABLE, "rva_LIVESTOCK_VTABLE", HOT_RVA, 0xE44350);
+    HotConfig_Register("autopet", (void*)&rva::CREATURE_VTABLE, "rva_CREATURE_VTABLE", HOT_RVA, 0xE42340);
+    HotConfig_Register("autopet", (void*)&rva::COM_UNIT_LIVESTOCK_VTABLE, "rva_COM_UNIT_LIVESTOCK_VTABLE", HOT_RVA, 0xE51C18);
+    HotConfig_Register("autopet", (void*)&rva::GAME_ROOT, "rva_GAME_ROOT", HOT_RVA, 0x111CC90);
     HotConfig_Register("autopet", (void*)&rva::ROOT_PLAYER_OFFSET, "rva_ROOT_PLAYER_OFFSET", HOT_RVA, 0x208);
     HotConfig_Register("autopet", (void*)&rva::ROOT_MAP_OWNER_OFFSET, "rva_ROOT_MAP_OWNER_OFFSET", HOT_RVA, 0x268);
     HotConfig_Register("autopet", (void*)&rva::MAP_INFO_OFFSET, "rva_MAP_INFO_OFFSET", HOT_RVA, 0x0d8);
@@ -1105,14 +1107,14 @@ extern "C" __declspec(dllexport) void mod_init(void) {
     HotConfig_Register("autopet", (void*)&rva::MAP_SPATIAL_INDEX_OFFSET, "rva_MAP_SPATIAL_INDEX_OFFSET", HOT_RVA, 0x6e0);
     HotConfig_Register("autopet", (void*)&rva::PLAYER_OBJECT_STATUS_OFFSET, "rva_PLAYER_OBJECT_STATUS_OFFSET", HOT_RVA, 0x32b8);
     HotConfig_Register("autopet", (void*)&rva::OBJECT_POSITION_OFFSET, "rva_OBJECT_POSITION_OFFSET", HOT_RVA, 0x0f0);
-    HotConfig_Register("autopet", (void*)&rva::LIVESTOCK_LIST_OFFSET, "rva_LIVESTOCK_LIST_OFFSET", HOT_RVA, 0x3430);
+    HotConfig_Register("autopet", (void*)&rva::LIVESTOCK_LIST_OFFSET, "rva_LIVESTOCK_LIST_OFFSET", HOT_RVA, 0x3438);
     HotConfig_Register("autopet", (void*)&rva::RAW_SECOND_OFFSET, "rva_RAW_SECOND_OFFSET", HOT_RVA, 0x3270);
     HotConfig_Register("autopet", (void*)&rva::SCAN_HOUR_FROM, "rva_SCAN_HOUR_FROM", HOT_INT, 7);
     HotConfig_Register("autopet", (void*)&rva::SCAN_HOUR_TO, "rva_SCAN_HOUR_TO", HOT_INT, 22);
     HotConfig_Register("autopet", (void*)&rva::GAIN_MULT, "gain_mult", HOT_INT, 1);        // v0.6.0: 好感倍率 1..100
-    HotConfig_Register("autopet", (void*)&rva::LOVE_SETTER, "rva_LOVE_SETTER", HOT_RVA, 0x2A0D50);
-    HotConfig_Register("autopet", (void*)&rva::RATE_MODIFIER, "rva_RATE_MODIFIER", HOT_RVA, 0x13B2C0);
-    HotConfig_Register("autopet", (void*)&rva::STATUS_SETTER, "rva_STATUS_SETTER", HOT_RVA, 0x158C50);
+    HotConfig_Register("autopet", (void*)&rva::LOVE_SETTER, "rva_LOVE_SETTER", HOT_RVA, 0x2A9960);
+    HotConfig_Register("autopet", (void*)&rva::RATE_MODIFIER, "rva_RATE_MODIFIER", HOT_RVA, 0x13DD30);
+    HotConfig_Register("autopet", (void*)&rva::STATUS_SETTER, "rva_STATUS_SETTER", HOT_RVA, 0x15B9A0);
     HotConfig_Register("autopet", (void*)&field::CA_MAP_BASE, "field_CA_MAP_BASE", HOT_RVA, 0x10);
     HotConfig_Register("autopet", (void*)&field::MAP_SENTINEL, "field_MAP_SENTINEL", HOT_RVA, 0x10);
     HotConfig_Register("autopet", (void*)&field::MAP_SIZE, "field_MAP_SIZE", HOT_RVA, 0x18);
@@ -1168,7 +1170,9 @@ BOOL APIENTRY DllMain(HMODULE h, DWORD reason, LPVOID /*lpReserved*/) {
         qol::SetLogName("autopet");
         Log("[autopet] DllMain attach \u2014 %s build 25311578", AUTOPET_VERSION);
         g_feature.SafeInit();
+        SetProcessDPIAware();  // 高 DPI 下 HUD 坐标对齐（避免模糊/偏移）
     } else if (reason == DLL_PROCESS_DETACH) {
+        qol::obs::Shutdown();  // v1.6.x: 解观测层映射（仅本 DLL 视图）
         Log("[autopet] detach");
     }
     return TRUE;

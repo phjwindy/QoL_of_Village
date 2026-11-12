@@ -50,6 +50,7 @@
   <ItemGroup>
     <ClCompile Include="sower.cpp" />
     <ClCompile Include="..\QoL_Shared\logging.cpp" />
+    <ClCompile Include="..\QoL_Shared\hot_config.cpp" />
     <ClCompile Include="..\QoL_Shared\hotkey.cpp" />
   </ItemGroup>
 

@@ -1,4 +1,7 @@
-// sickleharvest.cpp — SickleHarvest MOD for Village in the Shade v1.20 (v2.3.5 正式版)
+// sickleharvest.cpp — SickleHarvest MOD for Village in the Shade v1.20 (v2.3.9 正式版)
+//   v2.3.9【P1 硬化】ReleaseIntrusivePointer 原为裸手写释放（非原子预读 +
+//     vtable[0] 手动析构），全程无 SEH → 对象失效即访问违例崩进程。现改两段
+//     式 SEH（先判可析构性，再调析构）。残余：仍绕过原生 intrusiveRelease。
 // 镰刀范围收割：挥镰刀时一次性收割范围内所有成熟田地作物 + 果树
 // v2.3.3: v1.09→v1.20 (build 25311578) 适配——16 个 RVA 全部重定位。
 //         SHAKE_TREE_SETTLE 序言变化（新增 mov [rax+0x10],rdx 影子栈保存，
@@ -103,24 +106,16 @@
 #include <vector>
 
 #include "logging.h"
+#include "exe_guard.h"   // v-local: 统一游戏版本闸门
 #include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
 #include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
 #include "hot_config.h"
 #include "safe_call.h"
 #include "patch_safety.h"
+#include "obs.h"           // 统一 HUD 观测层（toast + 机器可读寄存器）
 
-// 日志开关：发布版禁用日志输出
-// 调试时取消注释下行即可开启日志
-// #define SICKLEHARVEST_LOGGING   // v2.3.7 转正：日志关闭（定位时取消注释重编）
-// #define SICKLEHARVEST_LOGGING
-#ifdef SICKLEHARVEST_LOGGING
-  // 使用 QoL_Shared 的日志系统
-#else
-  #define LogOpen(x)  ((void)0)
-  #define Log(...)    ((void)0)
-  #define LogV(...)   ((void)0)
-  #define LogClose()  ((void)0)
-#endif
+// 日志运行时开关（2026-10-24）：编译期宏退役，改由 QoL_Shared 运行时门控。
+// 开启方式：游戏根 qol_log.cfg 写 level=1（约 1s 生效，免重编免重启）；缺省/level=0 为静默。
 
 // [diag] 诊断日志门控（默认关）；调试时 #define DIAG_SICKLEHARVEST 1 开启
 #ifndef DIAG_SICKLEHARVEST
@@ -128,19 +123,19 @@
 #endif
 
 // ---- 版本与 RVA 常量（v1.20, build 25311578）----------------------------
-// exe size=18305544, SHA-256=AC7D955BAA915929B185DF85CFA13F7E81AD57A9C68F308DA769739775869A05 (v1.20 build 25311578)
+// exe size=18438664, SHA-256=979AEBE31B42D181EE92E9DB0086F22F65F2213029471A50723F61EAA93119A5 (build 25640656)
 
-static volatile uintptr_t RVA_SICKLE_GET_TARGET_CROPS   = 0x247F10;
-static volatile uintptr_t RVA_CROPS_ACTION_CHECK        = 0x0EEEB0;
-static volatile uintptr_t RVA_CROPS_GET_CURRENT_FORM    = 0x0EE790;
-static volatile uintptr_t RVA_HARVEST_SEARCH            = 0x21D960;
-static volatile uintptr_t RVA_HARVEST_SETTLE            = 0x21D380;
-static volatile uintptr_t RVA_CROPS_ACTION_CALLSITE     = 0x2481C2;
-static volatile uintptr_t RVA_SHAKE_TREE_SETTLE         = 0x1A7A40;
-static volatile uintptr_t RVA_SHAKE_TREE_REMAINING      = 0x0EF470;
-static volatile uintptr_t RVA_SHAKE_RAW_VECTOR_FREE     = 0x0B8720;
-static volatile uintptr_t RVA_SHAKE_TREE_REFRESH        = 0x1A3300;
-static volatile uintptr_t RVA_SHAKE_TREE_EVENT          = 0x7600C0;
+static volatile uintptr_t RVA_SICKLE_GET_TARGET_CROPS = 0x2506c0;
+static volatile uintptr_t RVA_CROPS_ACTION_CHECK = 0xf1760;
+static volatile uintptr_t RVA_CROPS_GET_CURRENT_FORM = 0xf1040;
+static volatile uintptr_t RVA_HARVEST_SEARCH = 0x220a50;
+static volatile uintptr_t RVA_HARVEST_SETTLE = 0x220470;
+static volatile uintptr_t RVA_CROPS_ACTION_CALLSITE = 0x250972;
+static volatile uintptr_t RVA_SHAKE_TREE_SETTLE = 0x1aaa40;
+static volatile uintptr_t RVA_SHAKE_TREE_REMAINING = 0xf1d20;
+static volatile uintptr_t RVA_SHAKE_RAW_VECTOR_FREE = 0xbaff0;
+static volatile uintptr_t RVA_SHAKE_TREE_REFRESH = 0x1a6300;
+static volatile uintptr_t RVA_SHAKE_TREE_EVENT = 0x777360;
 // v1.8.0-diag: RTTI 链不可用，改用模块基址 + vtable RVA 指纹识别
 // v2.2.2: RVA_ITEM_CTOR 已随 item_ctor 诊断 hook 一并移除
 static volatile uintptr_t MODULE_IMAGE_SIZE             = 0x5000000; // 模块映射大小（vtable 指纹识别用）
@@ -159,7 +154,6 @@ static constexpr size_t SICKLE_HOOK_LENGTH         = 16;
 static constexpr size_t ACTION_CHECK_HOOK_LENGTH   = 14;
 // v1.2.6-diag: A1+A2 hook 长度（均为完整指令边界，不拆分指令）
 
-
 // action 常量
 static constexpr uint64_t ACTION_SICKLE       = 0x410;
 static constexpr uint64_t ACTION_HARVEST      = 0x42E;
@@ -170,11 +164,11 @@ static constexpr size_t SICKLE_SHAKE_TREE_MAX_TARGETS = 256;
 static constexpr size_t SICKLE_SHAKE_TREE_MAX_SHAKES  = 64;
 
 // ---- 空间搜索常量（从 ChestSort/AutoHarvest 移植，v1.09 已验证）----------------
-static volatile uintptr_t RVA_GAME_ROOT              = 0x10FCBB0;
-static volatile uintptr_t WORLD_OBJECT_REGISTRY_RVA  = 0x1104C80;
-static volatile uintptr_t SEARCH_CALLBACK_VTABLE_RVA = 0xE3E608;
-static volatile uintptr_t RVA_SPATIAL_SEARCH          = 0x194060;
-static volatile uintptr_t RVA_RAW_VECTOR_FREE_GEN    = 0x0B8720;
+static volatile uintptr_t RVA_GAME_ROOT = 0x111cc90;
+static volatile uintptr_t WORLD_OBJECT_REGISTRY_RVA  = 0x1124D60;
+static volatile uintptr_t SEARCH_CALLBACK_VTABLE_RVA = 0xE59110;
+static volatile uintptr_t RVA_SPATIAL_SEARCH          = 0x197060;
+static volatile uintptr_t RVA_RAW_VECTOR_FREE_GEN    = 0xBAFF0;
 
 // 指针链偏移（与 ChestSort / AutoHarvest 一致）
 static volatile uintptr_t ROOT_PLAYER_OFFSET         = 0x208;
@@ -239,7 +233,6 @@ static ShakeTreeSettleFunction       g_shakeTreeSettle = nullptr;
 static ShakeRawVectorFreeFunction    g_shakeRawVectorFree = nullptr;
 static ShakeTreeRefreshFunction      g_shakeTreeRefresh = nullptr;
 static ShakeTreeEventFunction       g_shakeTreeEvent = nullptr;
-
 
 // v1.3.0-diag: Retrieve hook 已移除
 
@@ -553,26 +546,63 @@ static bool TryGetHarvestCropLandID(
     return *outLandID != ~u64{0};
 }
 
-static void ReleaseIntrusivePointer(void* object) {
+// v2.3.9【P1 硬化】本函数原为裸手写释放：非原子预读 + vtable[0] 手动析构，
+//   全程无 SEH。对象若已失效，读 vtable 或调析构会直接访问违例 → 进程崩溃。
+//   现按两段式 SEH：先在 __try 内取 vtable 并判定可析构性，再在独立 __try
+//   内调用析构。fallback 语义保持不变（计数 0 才析构）。
+//   已知残余：仍绕过游戏原生 intrusiveRelease（AutoHarvest 的原生释放是 AOB
+//   扫描获得，本 MOD 尚未接入）。本函数只在主线程 mod_tick 路径调用，
+//   且只释放"自己刚查询出来的临时对象"，当前风险可控。
+__declspec(noinline) static void ReleaseIntrusivePointer(void* object) {
+    if (!object) return;
     if (!IsReadable(object, sizeof(void*) + sizeof(LONG))) return;
     volatile LONG* references = reinterpret_cast<volatile LONG*>(
         reinterpret_cast<uintptr_t>(object) + sizeof(void*));
     if (*references == 0 || InterlockedDecrement(references) != 0) return;
-    void** vtable = *reinterpret_cast<void***>(object);
-    if (!IsReadable(vtable, sizeof(void*)) || !vtable[0]) return;
-    using DestroyFunction = void (__fastcall *)(void*, int);
-    reinterpret_cast<DestroyFunction>(vtable[0])(object, 1);
+
+    void** vtable = nullptr;
+    int destroyable = 0;
+    __try {
+        vtable = *reinterpret_cast<void***>(object);
+        destroyable =
+            (vtable && IsReadable(vtable, sizeof(void*)) && vtable[0]) ? 1 : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        destroyable = 0;
+    }
+    if (!destroyable) return;
+
+    __try {
+        using DestroyFunction = void (__fastcall *)(void*, int);
+        reinterpret_cast<DestroyFunction>(vtable[0])(object, 1);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // 析构失败：引用已递减，吞掉即可，不能让异常逸出到游戏。
+    }
 }
 
-static bool IsHarvestableNow(void* playerState, u64 landID) {
+// v2.3.1-seh: noinline —— 本函数含 __try，被 GetSickleTargetCropsDetour（含
+// C++ 对象展开）内联会触发 C2712；noinline 保持独立，SEH 只在自身生效。
+__declspec(noinline) static bool IsHarvestableNow(void* playerState, u64 landID) {
     if (!g_harvestSearch) return false;
     void* result = nullptr;
-    g_harvestSearch(playerState, &result, landID);
+    __try {
+        g_harvestSearch(playerState, &result, landID);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
     const bool harvestable = result != nullptr;
     if (result) ReleaseIntrusivePointer(result);
     return harvestable;
 }
 
+// v2.3.1-seh: 独立函数（无 C++ 对象展开）内含 __try，供含 vector/unordered_set
+// 的 GetSickleTargetCropsDetour 调用，规避 C2712（SEH 与 C++ 展开不可同函数）。
+__declspec(noinline) static unsigned short SafeShakeTreeRemaining(void* status) {
+    if (!status || !g_shakeTreeRemaining) return 0;
+    unsigned short v = 0;
+    __try { v = g_shakeTreeRemaining(status); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { v = 0; }
+    return v;
+}
 
 // ---- 空间搜索辅助（从 ChestSort/AutoHarvest 移植）---------------------------
 
@@ -965,7 +995,9 @@ static bool TrySettleShakeTreeOnce(void* cropsComponent, u64* outDelta) {
     }
     void* status = TryGetCropsStatus(cropsComponent);
     if (!status) return false;
-    const unsigned short before = g_shakeTreeRemaining(status);
+    unsigned short before = 0;
+    __try { before = g_shakeTreeRemaining(status); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { before = 0; }
     if (before == 0) return false;
 
     // v1.1.2: 参数修正——对齐 v1.09 原生 callsite (0x1A3C37 / 0x1A4A81)
@@ -996,7 +1028,9 @@ static bool TrySettleShakeTreeOnce(void* cropsComponent, u64* outDelta) {
     g_insideShakeTreeSettlement = false;
     ReleaseShakeTreeSettleOutput(&output);
 
-    const unsigned short after = g_shakeTreeRemaining(status);
+    unsigned short after = 0;
+    __try { after = g_shakeTreeRemaining(status); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { after = 0; }
     if (outDelta) *outDelta = before > after ? before - after : 0;
     return after < before;
 }
@@ -1113,7 +1147,6 @@ static bool __fastcall CropsActionCheckDetour(
 
 }
 
-
 // v2.3.0/P1-8+P2-10: HarvestSettle 批处理辅助函数（独立函数避免 C2712 对象展开限制）
 // SEH 包裹防崩溃 + 8ms 帧预算防卡顿
 static void RunHarvestSettleBatch(const u64* harvestLandIDs, size_t harvestCount,
@@ -1206,7 +1239,6 @@ if (!result) {
         Log("[SickleHarvest] early-return reason=begin_unreadable\n");
         return result;
     }
-
 
     // v1.4.0-diag: ScoutGimmicks 已移除——v1.3.0 实测木耳不在 spatialSearch 索引中
 
@@ -1415,6 +1447,8 @@ if (!result) {
 
     Log("[SickleHarvest] HARVEST DONE harvested=%zu trees=%zu native=%zu\n",
         harvestCount, shakeTreeTargetCount, nativeSickleCount);
+    qol::obs::EventF(1, 2200, L"收割完成: %zu 处田地/果树", harvestCount);
+    qol::obs::SetInt("sickleharvest", "harvested", (int)harvestCount);
     size_t shakeTreeSettledCount = 0;
     size_t shakeTotalCount = 0;
     size_t shakeTreeRemainingAfter = 0;
@@ -1424,7 +1458,7 @@ if (!result) {
     for (size_t i = 0; i < shakeTreeTargetCount; ++i) {
         void* status = shakeTreeStatuses[i];
         if (!status || !g_shakeTreeRemaining) continue;
-        unsigned short remaining = g_shakeTreeRemaining(status);
+        unsigned short remaining = SafeShakeTreeRemaining(status);
         if (g_shakeTreeVisualReady && remaining > 0) {
             const int eventId = remaining > 2 ? -3 : (remaining > 1 ? -2 : -1);
             const unsigned short eventValue = remaining > 2
@@ -1442,7 +1476,7 @@ if (!result) {
             if (!TrySettleShakeTreeOnce(shakeTreeComponents[i], &delta)) break;
             if (delta == 0) break;
             ++settled;
-            remaining = g_shakeTreeRemaining(status);
+            remaining = SafeShakeTreeRemaining(status);
         }
         shakeTotalCount += settled;
         if (settled > 0) {
@@ -1574,9 +1608,9 @@ static bool InstallSickleHarvestHook() {
         0x8b, 0xd9, 0x48, 0x8b
     };
     static const unsigned char expectedActionCallsite[21] = {
-        0x41, 0xb8, 0x10, 0x04, 0x00, 0x00, 0x48, 0x8b,
-        0xd7, 0x49, 0x8b, 0x8e, 0x50, 0x02, 0x00, 0x00,
-        0xe8, 0xd9, 0x6c, 0xea, 0xff
+        0x41, 0xB8, 0x10, 0x04, 0x00, 0x00, 0x48, 0x8B,
+        0xD7, 0x49, 0x8B, 0x8E, 0x50, 0x02, 0x00, 0x00,
+        0xE8, 0xD9, 0x0D, 0xEA, 0xFF,
     };
     unsigned char* actionCheck = reinterpret_cast<unsigned char*>(
         base + RVA_CROPS_ACTION_CHECK);
@@ -1728,18 +1762,24 @@ static bool InstallSickleHarvestHook() {
 
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("sickleharvest");
+    qol::obs::Init(nullptr);   // 统一 HUD 观测层：首 DLL 建共享映射 + 浮层窗口
+    // v-local：游戏版本闸门（village.exe 非 v1.20 build 25311578 则不启用）
+    if (!qol::ExeBuildSupported()) {
+        Log("[SickleHarvest] 游戏版本不匹配（非 v1.20 build 25311578）→ 本 MOD 不启用\n");
+        return;
+    }
     Log("[SickleHarvest] mod_init -- v2.3.5 v1.20 build 25311578\n");
-    HotConfig_Register("sickleharvest", (void*)&RVA_SICKLE_GET_TARGET_CROPS, "RVA_SICKLE_GET_TARGET_CROPS", HOT_RVA, 0x247F10);
-    HotConfig_Register("sickleharvest", (void*)&RVA_CROPS_ACTION_CHECK, "RVA_CROPS_ACTION_CHECK", HOT_RVA, 0x0EEEB0);
-    HotConfig_Register("sickleharvest", (void*)&RVA_CROPS_GET_CURRENT_FORM, "RVA_CROPS_GET_CURRENT_FORM", HOT_RVA, 0x0EE790);
-    HotConfig_Register("sickleharvest", (void*)&RVA_HARVEST_SEARCH, "RVA_HARVEST_SEARCH", HOT_RVA, 0x21D960);
-    HotConfig_Register("sickleharvest", (void*)&RVA_HARVEST_SETTLE, "RVA_HARVEST_SETTLE", HOT_RVA, 0x21D380);
-    HotConfig_Register("sickleharvest", (void*)&RVA_CROPS_ACTION_CALLSITE, "RVA_CROPS_ACTION_CALLSITE", HOT_RVA, 0x2481C2);
-    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_SETTLE, "RVA_SHAKE_TREE_SETTLE", HOT_RVA, 0x1A7A40);
-    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_REMAINING, "RVA_SHAKE_TREE_REMAINING", HOT_RVA, 0x0EF470);
-    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_RAW_VECTOR_FREE, "RVA_SHAKE_RAW_VECTOR_FREE", HOT_RVA, 0x0B8720);
-    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_REFRESH, "RVA_SHAKE_TREE_REFRESH", HOT_RVA, 0x1A3300);
-    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_EVENT, "RVA_SHAKE_TREE_EVENT", HOT_RVA, 0x7600C0);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SICKLE_GET_TARGET_CROPS, "RVA_SICKLE_GET_TARGET_CROPS", HOT_RVA, 0x2506c0);
+    HotConfig_Register("sickleharvest", (void*)&RVA_CROPS_ACTION_CHECK, "RVA_CROPS_ACTION_CHECK", HOT_RVA, 0xf1760);
+    HotConfig_Register("sickleharvest", (void*)&RVA_CROPS_GET_CURRENT_FORM, "RVA_CROPS_GET_CURRENT_FORM", HOT_RVA, 0xf1040);
+    HotConfig_Register("sickleharvest", (void*)&RVA_HARVEST_SEARCH, "RVA_HARVEST_SEARCH", HOT_RVA, 0x220a50);
+    HotConfig_Register("sickleharvest", (void*)&RVA_HARVEST_SETTLE, "RVA_HARVEST_SETTLE", HOT_RVA, 0x220470);
+    HotConfig_Register("sickleharvest", (void*)&RVA_CROPS_ACTION_CALLSITE, "RVA_CROPS_ACTION_CALLSITE", HOT_RVA, 0x250972);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_SETTLE, "RVA_SHAKE_TREE_SETTLE", HOT_RVA, 0x1aaa40);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_REMAINING, "RVA_SHAKE_TREE_REMAINING", HOT_RVA, 0xf1d20);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_RAW_VECTOR_FREE, "RVA_SHAKE_RAW_VECTOR_FREE", HOT_RVA, 0xbaff0);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_REFRESH, "RVA_SHAKE_TREE_REFRESH", HOT_RVA, 0x1a6300);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SHAKE_TREE_EVENT, "RVA_SHAKE_TREE_EVENT", HOT_RVA, 0x777360);
     // MODULE_IMAGE_SIZE 是扫描区域大小（非模块内偏移），用 HOT_INT64
     // 避免被 IsRvaSane 误拒（D6/D7 的 RVA 合法性检查只应管真正的 RVA）
     HotConfig_Register("sickleharvest", (void*)&MODULE_IMAGE_SIZE, "MODULE_IMAGE_SIZE", HOT_INT64, 0x5000000);
@@ -1749,11 +1789,11 @@ extern "C" __declspec(dllexport) void mod_init(void) {
     HotConfig_Register("sickleharvest", (void*)&CROPS_CHANGE_FORM_OFFSET, "CROPS_CHANGE_FORM_OFFSET", HOT_RVA, 0x80);
     HotConfig_Register("sickleharvest", (void*)&CROPS_IS_BIG_FORM_OFFSET, "CROPS_IS_BIG_FORM_OFFSET", HOT_RVA, 0x98);
     HotConfig_Register("sickleharvest", (void*)&PLAYER_ACTION_TARGET_OFFSET, "PLAYER_ACTION_TARGET_OFFSET", HOT_RVA, 0x248);
-    HotConfig_Register("sickleharvest", (void*)&RVA_GAME_ROOT, "RVA_GAME_ROOT", HOT_RVA, 0x10FCBB0);
-    HotConfig_Register("sickleharvest", (void*)&WORLD_OBJECT_REGISTRY_RVA, "WORLD_OBJECT_REGISTRY_RVA", HOT_RVA, 0x1104C80);
-    HotConfig_Register("sickleharvest", (void*)&SEARCH_CALLBACK_VTABLE_RVA, "SEARCH_CALLBACK_VTABLE_RVA", HOT_RVA, 0xE3E608);
-    HotConfig_Register("sickleharvest", (void*)&RVA_SPATIAL_SEARCH, "RVA_SPATIAL_SEARCH", HOT_RVA, 0x194060);
-    HotConfig_Register("sickleharvest", (void*)&RVA_RAW_VECTOR_FREE_GEN, "RVA_RAW_VECTOR_FREE_GEN", HOT_RVA, 0x0B8720);
+    HotConfig_Register("sickleharvest", (void*)&RVA_GAME_ROOT, "RVA_GAME_ROOT", HOT_RVA, 0x111cc90);
+    HotConfig_Register("sickleharvest", (void*)&WORLD_OBJECT_REGISTRY_RVA, "WORLD_OBJECT_REGISTRY_RVA", HOT_RVA, 0x1124D60);
+    HotConfig_Register("sickleharvest", (void*)&SEARCH_CALLBACK_VTABLE_RVA, "SEARCH_CALLBACK_VTABLE_RVA", HOT_RVA, 0xE59110);
+    HotConfig_Register("sickleharvest", (void*)&RVA_SPATIAL_SEARCH, "RVA_SPATIAL_SEARCH", HOT_RVA, 0x197060);
+    HotConfig_Register("sickleharvest", (void*)&RVA_RAW_VECTOR_FREE_GEN, "RVA_RAW_VECTOR_FREE_GEN", HOT_RVA, 0xBAFF0);
     HotConfig_Register("sickleharvest", (void*)&ROOT_PLAYER_OFFSET, "ROOT_PLAYER_OFFSET", HOT_RVA, 0x208);
     HotConfig_Register("sickleharvest", (void*)&ROOT_MAP_OWNER_OFFSET, "ROOT_MAP_OWNER_OFFSET", HOT_RVA, 0x268);
     HotConfig_Register("sickleharvest", (void*)&MAP_INFO_OFFSET, "MAP_INFO_OFFSET", HOT_RVA, 0x0d8);
@@ -1810,6 +1850,8 @@ extern "C" __declspec(dllexport) void unload(void) {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
+    } else if (reason == DLL_PROCESS_DETACH) {
+        qol::obs::Shutdown();
     }
     return TRUE;
 }

@@ -50,6 +50,8 @@
   <ItemGroup>
     <ClCompile Include="monstermark.cpp" />
     <ClCompile Include="..\QoL_Shared\logging.cpp" />
+    <ClCompile Include="..\QoL_Shared\state.cpp" />
+    <ClCompile Include="..\QoL_Shared\hot_config.cpp" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Targets" />

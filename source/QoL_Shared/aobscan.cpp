@@ -121,4 +121,38 @@ uintptr_t ScanProcessAOB(const char* aobText) {
     return 0;
 }
 
+// ============================================================
+// preflight 掩码验证（SEH 保护）
+// 注意：含 __try 的函数内不得有需要 C++ 栈展开的局部对象（C2712），
+//       故比对逻辑独立为 POD-only 函数，向量等对象留在调用方。
+// ============================================================
+static bool CompareMaskedSEH(const uint8_t* addr, const uint8_t* sig,
+                             const uint8_t* mask, size_t len) {
+    __try {
+        for (size_t i = 0; i < len; ++i) {
+            if (mask[i] != 0 && addr[i] != sig[i]) return false;
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;  // 内存不可读 → fail-safe
+    }
+}
+
+bool VerifyBytes(const void* addr, const uint8_t* sig, const uint8_t* mask, size_t len) {
+    if (!addr || !sig || !mask || len == 0) return false;
+    return CompareMaskedSEH(reinterpret_cast<const uint8_t*>(addr), sig, mask, len);
+}
+
+bool VerifyAOBText(const void* addr, const char* aobText) {
+    if (!addr || !aobText) return false;
+    std::vector<uint8_t> bytes;
+    std::vector<bool>    maskBool;
+    if (!ParseAOB(aobText, bytes, maskBool)) return false;
+    // vector<bool> → uint8_t 掩码（0xFF=需匹配 / 0=通配），SEH 辅助函数吃 POD 指针
+    std::vector<uint8_t> mask(maskBool.size());
+    for (size_t i = 0; i < maskBool.size(); ++i) mask[i] = maskBool[i] ? 0xFF : 0x00;
+    return CompareMaskedSEH(reinterpret_cast<const uint8_t*>(addr),
+                             bytes.data(), mask.data(), bytes.size());
+}
+
 } // namespace qol

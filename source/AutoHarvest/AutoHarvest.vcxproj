@@ -50,6 +50,7 @@
   <ItemGroup>
     <ClCompile Include="autoharvest.cpp" />
     <ClCompile Include="..\QoL_Shared\logging.cpp" />
+    <ClCompile Include="..\QoL_Shared\state.cpp" />
     <ClCompile Include="..\QoL_Shared\hotkey.cpp" />
     <ClCompile Include="..\QoL_Shared\aobscan.cpp" />
   </ItemGroup>

@@ -1,13 +1,3 @@
----
-AIGC:
-  ContentProducer: '001191110102MAD55U9H0F10002'
-  ContentPropagator: '001191110102MAD55U9H0F10002'
-  Label: '1'
-  ProduceID: '506511cf-6e4e-4a56-a606-5e00990d4089'
-  PropagateID: '506511cf-6e4e-4a56-a606-5e00990d4089'
-  ReservedCode1: '572417f5-e26d-40b4-92a6-29f09fcaa067'
-  ReservedCode2: '572417f5-e26d-40b4-92a6-29f09fcaa067'
----
 
 # steam_api64 桥接基座（Mods 加载器）
 
@@ -81,4 +71,3 @@ AIGC:
 
 作者：gloaming。转载或分享时请注明出处。
 
-> AI生成

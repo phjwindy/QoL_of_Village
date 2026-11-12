@@ -1,4 +1,17 @@
-// chestsort.cpp —— 箱子快速归类 (v1.4.3 正式版)
+// chestsort.cpp —— 箱子快速归类 (v1.4.9 正式版)
+//   v1.4.8【25640656 适配】8 处硬编码 RVA 迁移：VTABLE 0xE3E608→0xE59110（RTTI 链+自洽双证，
+//     排除姊妹实例 CItemStatus 0xE59148）、cb_copy 0x28E480→0x296DF0、cb_invoke 0x28E410→0x296D80、
+//     cb_destroy 0x1969B0→0x1999B0（slot4 铁证）、batch_recalc 0x1470C0→0x149BF0、
+//     batch_ui_refresh 0xFB170→0xFDB30、alt 0xFAB30→0xFD4F0、WORLD_OBJECT_REGISTRY
+//     0x1104C80→0x1124D60（.data 整体平移 Δ+0x200E0 与 GAME_ROOT 严格一致，函数锚定+跨函数投票）。
+//     EXPECTED_CB_COPY 前 8B 位移字节同步实读更新（0x19 0x23 0xBC 0x00）。
+//   v1.4.7【P1 修复】Level1 完全合并路径的背包槽 CAS 竞争失败分支缺失保护性
+//     AddRef 释放（同函数 else 分支却写了 → 复制粘贴不对称）。现补齐。
+//   v1.4.9【KB-120 修复】①源槽清空/保留决策改为权威重读背包真实计数(ReadStackCount)，
+//     不再信任局部 remaining——remaining 与真实计数脱节时会留下指向 count=0 的幽灵 item
+//     （石头壳子/不存在的鱼）；②清空路径加防双重释放守卫(引用计数==1 时不再 intrusiveRelease)；
+//     ③箱子目标槽指针加实时比对守卫(cc.itemsBegin[s] 实时 == 缓存才合并)，杜绝"背包被扣、
+//     箱子没增加"的消失 bug。DIAG_CHESTSORT=1 时输出决策前后计数与过期跳过的诊断日志。
 //
 // v1.4.2-diag: H9 修复——5 处 itemAdjust 调用改为 SafeItemAdjust SEH 包装（防崩溃）；
 //              D3 修复——回滚 itemAdjust 失败时记录日志+设置 rollbackFailed 标志。
@@ -70,23 +83,16 @@
 // 改用 HID 直读方案：SetupAPI 枚举 + ReadFile 读输入报告
 
 #include "logging.h"
+#include "exe_guard.h"   // v-local: 统一游戏版本闸门
 #include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
 #include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
 #include "hot_config.h"
 #include "aobscan.h"
 #include "hotkey.h"   // 共享热键运行时读取（游戏内改键链路）
+#include "obs.h"       // 统一 HUD 观测层（toast + 机器可读寄存器）
 
-// 日志开关：发布版禁用日志输出（不生成 qol_chestsort.log）
-// 如需调试，取消下一行注释即可恢复日志输出
-// #define CHESTSORT_LOGGING   // v1.4.5 转正：日志关闭（定位时取消注释重编）
-// #define CHESTSORT_LOGGING
-#ifdef CHESTSORT_LOGGING
-#else
-  #define LogOpen(x)  ((void)0)
-  #define Log(...)    ((void)0)
-  #define LogV(...)   ((void)0)
-  #define LogClose()  ((void)0)
-#endif
+// 日志运行时开关（2026-10-24）：编译期宏退役，改由 QoL_Shared 运行时门控。
+// 开启方式：游戏根 qol_log.cfg 写 level=1（约 1s 生效，免重编免重启）；缺省/level=0 为静默。
 
 // [diag] 诊断日志门控（默认关）；调试时 #define DIAG_CHESTSORT 1 开启
 #ifndef DIAG_CHESTSORT
@@ -96,7 +102,7 @@
 // ============================================================
 // 常量（build 24969282 / v1.08.1）
 // ============================================================
-static volatile uintptr_t RVA_GAME_ROOT = 0x10FCBB0;  // 新 build 重定位
+static volatile uintptr_t RVA_GAME_ROOT = 0x111cc90;  // 新 build 重定位
 
 // ---- 手柄 D-pad Up 检测：XInput + HID + joyGetPosEx 三路混合方案 ----
 // 路径 1: XInput 独立线程（Xbox 手柄，热插拔天然支持）
@@ -151,11 +157,11 @@ static constexpr float  SORT_RADIUS_SQ = SORT_RADIUS * SORT_RADIUS;
 // v1.09 (build 25094764): RTTI 链扫描确认 vtable 从 0xE17168 移至 0xE1C168
 // 旧 0xE17168 在 v1.09 下 vtable[-1] 不指向有效 COL，vtable[4]=0x4EEB0 ≠ destroy(0x18C290)
 // 新 vtable 通过 _Func_impl_no_alloc<lambda_1@MapSearchStatusInRectTemplate<CGimmickStatus>> RTTI 链定位
-static volatile uintptr_t WORLD_OBJECT_REGISTRY_RVA = 0x1104C80;  // .data BSS 全局变量（v1.09 未变）
-static volatile uintptr_t SEARCH_CALLBACK_VTABLE_RVA = 0xE3E608;   // v1.20 (build 25311578): ALL_OBJECTS vtable
-static volatile uintptr_t SEARCH_CALLBACK_COPY_RVA = 0x28E480;   // v1.09: vt[0] (旧 0x280C50)
-static volatile uintptr_t SEARCH_CALLBACK_INVOKE_RVA = 0x28E410;   // v1.09: vt[2] (旧 0x280BE0)
-static volatile uintptr_t SEARCH_CALLBACK_DESTROY_RVA = 0x1969B0;   // v1.09: vt[4] (旧 0x18C210)
+static volatile uintptr_t WORLD_OBJECT_REGISTRY_RVA = 0x1124D60;  // .data 全局变量（v1.4.0 build 25640656，旧 0x1104C80，Δ+0x200E0 与 GAME_ROOT 数据段平移一致）
+static volatile uintptr_t SEARCH_CALLBACK_VTABLE_RVA = 0xE59110;   // v1.4.0 (build 25640656): RTTI 链定案（旧 0xE3E608，Δ+0x1BB08）
+static volatile uintptr_t SEARCH_CALLBACK_COPY_RVA = 0x296DF0;   // v1.4.0: vt[0] (旧 0x28E480，Δ+0x8970)
+static volatile uintptr_t SEARCH_CALLBACK_INVOKE_RVA = 0x296D80;   // v1.4.0: vt[2] (旧 0x28E410，Δ+0x8970)
+static volatile uintptr_t SEARCH_CALLBACK_DESTROY_RVA = 0x1999B0;   // v1.4.0: vt[4] (旧 0x1969B0，Δ+0x3000)
 
 // ============================================================
 // AOB 签名表（从 BigL233 源码验证块摘录）
@@ -169,9 +175,9 @@ struct AOBDef {
 // （纯寄存器保存），全模块 455/5+ 匹配，AOB 无法定位。
 // 通过 RVA 关系定位（旧 build recalc=dirty+0x660, ui=dirty-0x4C200）
 // + 候选函数体特征验证（DL 读取 + 对象偏移模式），硬编码如下 RVA：
-static volatile uintptr_t RVA_BATCH_RECALCULATE = 0x1470C0;  // v1.09(build 25094764) 重定位
-static volatile uintptr_t RVA_BATCH_UI_REFRESH = 0xFB170;   // v1.09(build 25094764) 重定位
-static volatile uintptr_t RVA_BATCH_UI_REFRESH_ALT = 0xFAB30; // v1.2.8: 背包侧 UI 刷新（[[obj+0x200]+0x30]）
+static volatile uintptr_t RVA_BATCH_RECALCULATE = 0x149BF0;  // v1.4.0(build 25640656) 重定位（旧 0x1470C0）
+static volatile uintptr_t RVA_BATCH_UI_REFRESH = 0xFDB30;   // v1.4.0(build 25640656) 重定位（旧 0xFB170）
+static volatile uintptr_t RVA_BATCH_UI_REFRESH_ALT = 0xFD4F0; // v1.4.0: 背包侧 UI 刷新（旧 0xFAB30）（[[obj+0x200]+0x30]）
 
 // ---- 硬编码 RVA prologue 验证常量（从 v1.09 exe 实读） ----
 // 用于 mod_init 阶段验证硬编码 RVA 仍指向正确函数，防止版本更新后地址偏移
@@ -185,7 +191,7 @@ static const unsigned char EXPECTED_BATCH_UI_REFRESH_ALT_PROLOGUE[8] = {
     0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74
 };
 static const unsigned char EXPECTED_CB_COPY_PROLOGUE[8] = {
-    0x48, 0x8D, 0x05, 0x81, 0x01, 0xBB, 0x00, 0x48
+    0x48, 0x8D, 0x05, 0x19, 0x23, 0xBC, 0x00, 0x48
 };
 static const unsigned char EXPECTED_CB_INVOKE_PROLOGUE[8] = {
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74
@@ -296,6 +302,8 @@ struct CachedItem {
     uint64_t itemId;
     int rank;
     int stackCount;
+    int slotIndex;    // v1.4.10: 该物品在箱子实时数组中的真实槽位号
+                      // （缓存跳过空槽紧凑存储，缓存下标 != 槽位号）
 };
 
 struct CachedChest {
@@ -867,7 +875,8 @@ static void BuildWorkCache(const WorldContext* ctx) {
                 if (!ci) continue;
                 ItemInfo info = {};
                 if (!ReadItem(ci, &info)) continue;
-                cc.items[cc.itemCount] = { ci, info.itemId, info.rank, info.stackCount };
+                cc.items[cc.itemCount] = { ci, info.itemId, info.rank,
+                                           info.stackCount, (int)s };
                 cc.itemCount++;
             }
         }
@@ -1330,6 +1339,42 @@ static void DoSort(WorldContext* ctx) {
                 chestMatched = true;
 
                 void* targetItem = cc.items[s].item;
+                // v1.4.9: 防过期指针——cc.items[s].item 是 BuildWorkCache 时快照，
+                // 若箱子在两次缓存构建间被重排/替换，targetItem 会指向已从真实槽位移除的
+                // 悬空对象。重新从箱子实时槽位数组读当前指针比对，不一致则跳过该槽：
+                // 避免"背包物品被扣、箱子却没增加"的消失 bug（KB-120 鱼症状）。
+                if (cc.itemsBegin) {
+                    // v1.4.10 玩家反馈修复：cc.items[] 是跳过空槽的紧凑数组，
+                    // 旧代码用缓存下标 s 直接索引实时槽位数组 —— 只要箱子中间
+                    // 有空槽就整体错位，后面的未满同类堆被误判「过期指针」跳过，
+                    // 表现为「一个 999 满堆 + 隔壁未满同类堆也收不进去」。
+                    // 改用建缓存时记录的真实槽位号；若箱子被重排则按对象指针重定位。
+                    void* liveTarget = nullptr;
+                    uintptr_t slotAddr = (uintptr_t)cc.itemsBegin +
+                                         (size_t)cc.items[s].slotIndex * sizeof(void*);
+                    if (IsReadable((void*)slotAddr, sizeof(void*)))
+                        liveTarget = *(void**)slotAddr;
+                    if (liveTarget != targetItem) {
+                        bool relocated = false;
+                        for (int k = 0; k < CHEST_SLOT_COUNT; ++k) {
+                            void** ka = (void**)((uintptr_t)cc.itemsBegin +
+                                                 (size_t)k * sizeof(void*));
+                            if (!IsReadable(ka, sizeof(void*))) continue;
+                            if (*ka == targetItem) {
+                                cc.items[s].slotIndex = k;
+                                relocated = true;
+                                break;
+                            }
+                        }
+                        if (!relocated) {
+#if DIAG_CHESTSORT
+                            Log("[ChestSort][diag] 跳过过期箱槽指针: itemId=%llu 缓存=%p 实时=%p",
+                                (unsigned long long)info.itemId, targetItem, liveTarget);
+#endif
+                            continue;
+                        }
+                    }
+                }
                 int targetBefore = 0;
                 if (!ReadStackCount(targetItem, &targetBefore)) continue;
 
@@ -1428,70 +1473,64 @@ static void DoSort(WorldContext* ctx) {
         // 满堆+空位时背包同类物品无法放入是预期行为（安全优先）。
         // ================================================================
 
+        // ================================================================
         // 合并完成后处理背包槽位
-        if (anyMoved && remaining == 0) {
-            // 物品已全部转移（Level 1 合并到 0）
-            // v1.3.5: Level 3 已移除，此分支仅处理 Level 1 完全合并
-            //   此时 ReadStackCount 返回原始 stackCount（≠0），不走 CAS 清空分支。
-            //   但保护性 AddRef（L1217）未释放 → 需在此补释放。
-            //
-            // v1.3.1-bugfix: Level 1 完全合并路径，itemAdjust(item, -moveCount)
-            //   将 stackCount 减到 0。但如果 itemAdjust 有内部自动释放逻辑
-            //   （stack→0 时 release），或 stackCount 变为负值/越界值，
-            //   ReadStackCount 会返回 false → 原代码跳过 CAS 清空 + 释放，
-            //   导致背包槽位悬空（指向已耗尽物品）+ 保护性 AddRef 泄漏。
-            //   修复：无论 ReadStackCount 是否成功，都必须清空背包槽位 + 释放保护性 AddRef。
-            int sourceAfter = -1;
-            bool countOk = ReadStackCount(item, &sourceAfter);
-            if (countOk && sourceAfter == 0) {
-                // 正常路径：stackCount=0，清空背包槽
-                // v1.3.4/P0-4+P1-7: 先 Decrement(保护性AddRef) 再 Release(背包引用)，
-                //   统一释放顺序——Decrement 先减保护引用，Release 再减背包引用
-                //   若 refcount→0 则 Release 内部触发析构
-                void* observed = InterlockedCompareExchangePointer(
-                    reinterpret_cast<void* volatile*>(&slots[i]), nullptr, item);
-                if (observed == item) {
-                    InterlockedDecrement(reinterpret_cast<volatile LONG*>(
-                        reinterpret_cast<uintptr_t>(item) + sizeof(void*)));
-                    void* slotOwnedRef = item;
-                    if (G::intrusiveRelease) G::intrusiveRelease(&slotOwnedRef);
+        // v1.4.9 重构：清空/保留决策改为【权威重读背包真实计数】，不再信任局部
+        //   计数器 remaining。remaining 在 itemAdjust 回滚失败等边缘情况下会与物品
+        //   真实计数脱节，导致"真实已空却保留槽位"的幽灵 item（石头壳子/不存在的鱼，
+        //   见 KB-120）。清空路径同时加【防双重释放】引用计数守卫。
+        // ================================================================
+        int actualAfter = -1;
+        bool actualOk = ReadStackCount(item, &actualAfter);
+        bool exhausted = (actualOk && actualAfter == 0);
+#if DIAG_CHESTSORT
+        Log("[ChestSort][diag] 决策前: itemId=%llu anyMoved=%d remaining=%d actualOk=%d actualAfter=%d",
+            (unsigned long long)info.itemId, (int)anyMoved, remaining, (int)actualOk, actualAfter);
+#endif
+
+        // 安全释放背包槽引用：CAS 清空槽位后，仅当物品引用计数>1（游戏仍持有其一）
+        // 才 intrusiveRelease 游戏的背包引用；若==1 说明游戏已在 count→0 时释放，
+        // 再 release 即双重释放。无论如何都释放我们的保护性 guard ref。
+        auto SafeReleaseSlot = [&](void* curItem) {
+            void* observed = InterlockedCompareExchangePointer(
+                reinterpret_cast<void* volatile*>(&slots[i]), nullptr, curItem);
+            if (observed == curItem) {
+                LONG rc = *(volatile LONG*)((uintptr_t)curItem + sizeof(void*));
+                if (rc > 1 && G::intrusiveRelease) {
+                    void* slotOwnedRef = curItem;
+                    G::intrusiveRelease(&slotOwnedRef);
                 }
-                movedStacks++;
-            } else if (!countOk || sourceAfter != 0) {
-                // v1.3.5: Level 3 已移除，此路径仅处理 itemAdjust 内部释放情况
-                // 物品已不在背包有效状态，强制清空背包槽位 + 释放保护性 AddRef
-                // v1.3.5: Level 3 已移除，此分支仅处理 itemAdjust 内部释放
-                // Level 1 异常路径：背包槽位仍指向物品，此处 CAS 清空 + 释放保护性 AddRef
-                void* observed = InterlockedCompareExchangePointer(
-                    reinterpret_cast<void* volatile*>(&slots[i]), nullptr, item);
-                if (observed == item) {
-                    // v1.3.4/P1-7: 先 Decrement(保护性) 再 Release(背包引用)，统一顺序
-                    InterlockedDecrement(reinterpret_cast<volatile LONG*>(
-                        reinterpret_cast<uintptr_t>(item) + sizeof(void*)));
-                    void* slotOwnedRef = item;
-                    if (G::intrusiveRelease) G::intrusiveRelease(&slotOwnedRef);
-                }
-                // v1.3.5: Level 3 已移除，此处 CAS 通常成功（observed == item）
-                if (observed != item) {
-                    InterlockedDecrement(reinterpret_cast<volatile LONG*>(
-                        reinterpret_cast<uintptr_t>(item) + sizeof(void*)));
-                }
-                if (!countOk) {
-                    Log("[ChestSort] [bugfix] ReadStackCount 失败，强制清空背包槽: itemId=%llu (箱内已合并)",
-                        (unsigned long long)info.itemId);
-                } else {
-                    // sourceAfter != 0：Level 3 整物品已移入箱子，保护性 AddRef 需释放
-                    // 不记日志（正常 Level 3 路径）
-                }
-                movedStacks++;
+            } else {
+                // 槽位已被游戏改写（≠curItem）：不碰背包引用，仅释放我们的 guard ref
+                Log("[ChestSort][guard] 清槽 CAS 丢失(itemId=%llu)，仅释放 guard ref",
+                    (unsigned long long)info.itemId);
             }
-        } else if (anyMoved && remaining > 0) {
-            // 只转移了一部分（拆分转移后还有剩余），背包槽位不清空
-            // v1.3.1: 释放 L1190 的保护性 AddRef，防止引用泄漏
             InterlockedDecrement(reinterpret_cast<volatile LONG*>(
-                reinterpret_cast<uintptr_t>(item) + sizeof(void*)));
-            Log("[ChestSort] 部分转移: itemId=%llu 剩余 %d 未转移",
-                (unsigned long long)info.itemId, remaining);
+                reinterpret_cast<uintptr_t>(curItem) + sizeof(void*)));
+        };
+
+        if (anyMoved && (exhausted || remaining == 0)) {
+            // 物品已清空或真实计数为 0 → 清空背包槽（杜绝幽灵 item）
+            SafeReleaseSlot(item);
+            movedStacks++;
+#if DIAG_CHESTSORT
+            Log("[ChestSort][diag] 清槽: itemId=%llu exhausted=%d remaining=%d",
+                (unsigned long long)info.itemId, (int)exhausted, remaining);
+#endif
+        } else if (anyMoved && remaining > 0) {
+            // 部分转移：优先以【真实计数】为准。若真实已空(exhausted)而 remaining>0，
+            // 说明 remaining 与真实脱节——仍以真实为准清槽，绝不保留指向 count=0 的幽灵。
+            if (exhausted) {
+                Log("[ChestSort][WARN] remaining>0 但真实计数已 0，强制清槽防幽灵: itemId=%llu remaining=%d",
+                    (unsigned long long)info.itemId, remaining);
+                SafeReleaseSlot(item);
+            } else {
+                // 真实仍有剩余：保留槽位，仅释放 guard ref（物品还在背包）
+                InterlockedDecrement(reinterpret_cast<volatile LONG*>(
+                    reinterpret_cast<uintptr_t>(item) + sizeof(void*)));
+                Log("[ChestSort] 部分转移: itemId=%llu 真实剩余 %d (remaining记 %d)",
+                    (unsigned long long)info.itemId, actualAfter, remaining);
+            }
             movedStacks++;
         }
 
@@ -1600,6 +1639,9 @@ static void DoSort(WorldContext* ctx) {
 #endif
         }
         Log("[ChestSort] 完成: 转移 %d 堆, %d 个物品", (int)movedStacks, (int)movedItems);
+        // 统一 HUD 观测层：人类看浮层 + AI 读寄存器（版本更新后零截图回归）
+        qol::obs::EventF(1, 2200, L"已收纳 %d 组 (%d 物品)", (int)movedStacks, (int)movedItems);
+        qol::obs::SetInt("chestsort", "grouped", (int)movedStacks);
     } else {
         Log("[ChestSort] 无可转移物品");
     }
@@ -1666,10 +1708,18 @@ static void PollInput() {
 // ============================================================
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("chestsort");
+    // v-local：游戏版本闸门（village.exe 非 v1.20 build 25311578 则不启用）
+    if (!qol::ExeBuildSupported()) {
+        Log("[ChestSort] 游戏版本不匹配（非 v1.20 build 25311578）→ 本 MOD 不启用\n");
+        return;
+    }
     Log("[ChestSort] mod_init 开始");
 
+    // 统一 HUD 观测层：首 DLL 建共享映射 + 浮层窗口（其余 DLL 自动复用同映射）
+    qol::obs::Init(nullptr);
+
     // ---- HotConfig 热调参注册 ----
-    HotConfig_Register("chestsort", (void*)&RVA_GAME_ROOT, "RVA_GAME_ROOT", HOT_RVA, 0x10FCBB0);
+    HotConfig_Register("chestsort", (void*)&RVA_GAME_ROOT, "RVA_GAME_ROOT", HOT_RVA, 0x111cc90);
     HotConfig_Register("chestsort", (void*)&ROOT_PLAYER_OFFSET, "ROOT_PLAYER_OFFSET", HOT_RVA, 0x208);
     HotConfig_Register("chestsort", (void*)&ROOT_MAP_OWNER_OFFSET, "ROOT_MAP_OWNER_OFFSET", HOT_RVA, 0x268);
     HotConfig_Register("chestsort", (void*)&MAP_INFO_OFFSET, "MAP_INFO_OFFSET", HOT_RVA, 0x0d8);
@@ -1689,14 +1739,14 @@ extern "C" __declspec(dllexport) void mod_init(void) {
     HotConfig_Register("chestsort", (void*)&GIMMICK_DATA_HOLDER_OFFSET, "GIMMICK_DATA_HOLDER_OFFSET", HOT_RVA, 0x240);
     HotConfig_Register("chestsort", (void*)&GIMMICK_MODULE_NAME_OFFSET, "GIMMICK_MODULE_NAME_OFFSET", HOT_RVA, 0x0E0);
     HotConfig_Register("chestsort", (void*)&GIMMICK_POSITION_OFFSET, "GIMMICK_POSITION_OFFSET", HOT_RVA, 0x0f0);
-    HotConfig_Register("chestsort", (void*)&WORLD_OBJECT_REGISTRY_RVA, "WORLD_OBJECT_REGISTRY_RVA", HOT_RVA, 0x1104C80);
-    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_VTABLE_RVA, "SEARCH_CALLBACK_VTABLE_RVA", HOT_RVA, 0xE3E608);
-    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_COPY_RVA, "SEARCH_CALLBACK_COPY_RVA", HOT_RVA, 0x28E480);
-    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_INVOKE_RVA, "SEARCH_CALLBACK_INVOKE_RVA", HOT_RVA, 0x28E410);
-    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_DESTROY_RVA, "SEARCH_CALLBACK_DESTROY_RVA", HOT_RVA, 0x1969B0);
-    HotConfig_Register("chestsort", (void*)&RVA_BATCH_RECALCULATE, "RVA_BATCH_RECALCULATE", HOT_RVA, 0x1470C0);
-    HotConfig_Register("chestsort", (void*)&RVA_BATCH_UI_REFRESH, "RVA_BATCH_UI_REFRESH", HOT_RVA, 0xFB170);
-    HotConfig_Register("chestsort", (void*)&RVA_BATCH_UI_REFRESH_ALT, "RVA_BATCH_UI_REFRESH_ALT", HOT_RVA, 0xFAB30);
+    HotConfig_Register("chestsort", (void*)&WORLD_OBJECT_REGISTRY_RVA, "WORLD_OBJECT_REGISTRY_RVA", HOT_RVA, 0x1124D60);
+    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_VTABLE_RVA, "SEARCH_CALLBACK_VTABLE_RVA", HOT_RVA, 0xE59110);
+    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_COPY_RVA, "SEARCH_CALLBACK_COPY_RVA", HOT_RVA, 0x296DF0);
+    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_INVOKE_RVA, "SEARCH_CALLBACK_INVOKE_RVA", HOT_RVA, 0x296D80);
+    HotConfig_Register("chestsort", (void*)&SEARCH_CALLBACK_DESTROY_RVA, "SEARCH_CALLBACK_DESTROY_RVA", HOT_RVA, 0x1999B0);
+    HotConfig_Register("chestsort", (void*)&RVA_BATCH_RECALCULATE, "RVA_BATCH_RECALCULATE", HOT_RVA, 0x149BF0);
+    HotConfig_Register("chestsort", (void*)&RVA_BATCH_UI_REFRESH, "RVA_BATCH_UI_REFRESH", HOT_RVA, 0xFDB30);
+    HotConfig_Register("chestsort", (void*)&RVA_BATCH_UI_REFRESH_ALT, "RVA_BATCH_UI_REFRESH_ALT", HOT_RVA, 0xFD4F0);
     HotConfig_Poll();
     HotConfig_DumpCE("chestsort");
 
@@ -1893,6 +1943,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
         DisableThreadLibraryCalls(hModule);
     } else if (reason == DLL_PROCESS_DETACH) {
         Log("[ChestSort] DllMain DETACH");
+        qol::obs::Shutdown();
     }
     return TRUE;
 }

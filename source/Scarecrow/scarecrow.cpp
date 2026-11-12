@@ -21,27 +21,24 @@
 // 适配 build 25311578 / v1.20。
 
 #include <windows.h>
+#include "obs.h"              // v1.6.x: 统一观测层（AI 可读寄存器 + toast）
 #include <cstdint>
 #include <atomic>
 #include <cstring>
 
 #include "logging.h"
+#include "exe_guard.h"   // v-local: 统一游戏版本闸门
 #include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
 #include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
 #include "hot_config.h"
 #include "memory_cache.h"
 #include "patch_safety.h"  // v1.0.2: FastRegion 区域缓存
+#include "hook.h"          // v1.0.15: qol::HookInstall（5字节+RIP重定位+relay），几何回调专用
 
 // 日志开关：发布版禁用日志输出
 // 调试时取消注释下行即可开启日志
-// #define SCARECROW_LOGGING   // v1.0.10 转正：日志关闭（定位时取消注释重编）
-#ifdef SCARECROW_LOGGING
-#else
-  #define LogOpen(x)  ((void)0)
-  #define Log(...)    ((void)0)
-  #define LogV(...)   ((void)0)
-  #define LogClose()  ((void)0)
-#endif
+// 日志运行时开关（2026-10-24）：编译期宏 SCARECROW_LOGGING 退役，改由 QoL_Shared 运行时门控。
+// 开启方式：游戏根 qol_log.cfg 写 level=1（约 1s 生效，免重编免重启）；缺省/level=0 为静默。
 
 using u64 = std::uint64_t;
 using u32 = std::uint32_t;
@@ -51,13 +48,13 @@ using u32 = std::uint32_t;
 // ============================================================
 
 // ---- hook 目标 RVA ----
-static volatile uintptr_t RVA_IS_PLACEMENT_GIMMICK = 0x1DE1A0;
-static volatile uintptr_t RVA_PLACEMENT_LAND_PREDICATE = 0x1E6E00;
-static volatile uintptr_t RVA_PLACEMENT_OBJECT_PREDICATE = 0x1E01E0;
-static volatile uintptr_t RVA_GEOMETRY_INTERSECTION_WRAPPER = 0x6D0290;
+static volatile uintptr_t RVA_IS_PLACEMENT_GIMMICK = 0x1e1270;
+static volatile uintptr_t RVA_PLACEMENT_LAND_PREDICATE = 0x1e9ed0;
+static volatile uintptr_t RVA_PLACEMENT_OBJECT_PREDICATE = 0x1e32b0;
+static volatile uintptr_t RVA_GEOMETRY_INTERSECTION_WRAPPER = 0x6e7500;
 static volatile uintptr_t RVA_GEOMETRY_CALLBACK_VTABLE_SLOT = 0xE74D58;
-static volatile uintptr_t RVA_CURRENT_WORLD_KEY = 0xE67A0;
-static volatile uintptr_t RVA_RESOLVE_GEOMETRY_STATUS = 0x6C3A00;
+static volatile uintptr_t RVA_CURRENT_WORLD_KEY = 0xe9070;
+static volatile uintptr_t RVA_RESOLVE_GEOMETRY_STATUS = 0x6dac70;
 
 // ---- 结构体偏移 ----
 static volatile uintptr_t GIMMICK_DATA_HOLDER_OFFSET = 0x240;
@@ -77,16 +74,16 @@ static const unsigned char kExpectedObjectPredicate[15] = {
     0x24, 0x18, 0x48, 0x89, 0x7C, 0x24, 0x20
 };
 static const unsigned char kExpectedGeometryWrapper[20] = {
-    0x48, 0x89, 0x5C, 0x24, 0x18, 0x57, 0x48, 0x81,
-    0xEC, 0xC0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x05,
-    0x9C, 0xED, 0x94, 0x00
-};
+        0x48, 0x89, 0x5C, 0x24, 0x18, 0x57, 0x48, 0x81,
+        0xEC, 0xC0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x05,
+        0x2C, 0x5B, 0x95, 0x00,
+    };
 static const unsigned char kExpectedCurrentWorldKey[28] = {
-    0x48, 0x83, 0xEC, 0x28, 0x65, 0x48, 0x8B, 0x04,
-    0x25, 0x58, 0x00, 0x00, 0x00, 0xB9, 0x10, 0x00,
-    0x00, 0x00, 0x48, 0x8B, 0x00, 0x8B, 0x04, 0x01,
-    0x39, 0x05, 0x42, 0x5F
-};
+        0x48, 0x83, 0xEC, 0x28, 0x65, 0x48, 0x8B, 0x04,
+        0x25, 0x58, 0x00, 0x00, 0x00, 0xB9, 0x10, 0x00,
+        0x00, 0x00, 0x48, 0x8B, 0x00, 0x8B, 0x04, 0x01,
+        0x39, 0x05, 0x3E, 0x37,
+    };
 static const unsigned char kExpectedResolver[16] = {
     0x48, 0x89, 0x5C, 0x24, 0x08, 0x4C, 0x8B, 0xD9,
     0x44, 0x0F, 0xB6, 0xD2, 0x48, 0xBB, 0xB3, 0x01
@@ -420,6 +417,39 @@ static bool InstallVtableHook(const char* name, uintptr_t slotRva,
     return true;
 }
 
+// 几何相交回调专用 hook：用 5 字节 E9+relay（qol::HookInstall），而非 14 字节绝对跳转。
+// 根因（2026-10-29 定位）：该函数序言第 4 条是 RIP 相对的
+//   `48 8B 05 2C 5B 95 00 = mov rax,[rip+0x955B2C]`（位于 +13）。
+//   旧 InstallFunctionHook 把整段 20 字节序言原样拷进 trampoline 且**不重定位 RIP**，
+//   trampoline 里这条读指令的 rip 变了、disp32 没变 → 读到未映射地址 → AV
+//   → 游戏自带 VEH 抢先 TerminateProcess → 静默消失（"读档即崩且无日志"的真凶）。
+// 5 字节 hook 只覆盖首条整指令 `48 89 5C 24 18`（mov [rsp+18],rbx），
+//   回跳到 +5 继续执行，那条 RIP 指令保留在原址、rip 与 disp32 都正确 → 不再崩。
+static bool InstallGeometryCallbackHook() {
+    uintptr_t base = G::base;
+    unsigned char* target = reinterpret_cast<unsigned char*>(
+        base + RVA_GEOMETRY_INTERSECTION_WRAPPER);
+    // 先整体校验 20 字节仍是预期函数（前 4 条整指令），再打 5 字节 hook
+    if (memcmp(target, kExpectedGeometryWrapper,
+               sizeof(kExpectedGeometryWrapper)) != 0) {
+        Log("[Scarecrow] hook=geometry-intersection-callback rva=0x%llx byte check FAILED\n",
+            static_cast<unsigned long long>(RVA_GEOMETRY_INTERSECTION_WRAPPER));
+        return false;
+    }
+    uintptr_t orig = 0;
+    if (!qol::HookInstall(reinterpret_cast<uintptr_t>(target),
+                          reinterpret_cast<uintptr_t>(&GeometryWrapperDetour),
+                          &orig)) {
+        Log("[Scarecrow] hook=geometry-intersection-callback install FAILED\n");
+        return false;
+    }
+    g_originalGeometryWrapper =
+        reinterpret_cast<PlacementPredicateFunction>(orig);
+    Log("[Scarecrow] hook=geometry-intersection-callback rva=0x%llx installed (5B)\n",
+        static_cast<unsigned long long>(RVA_GEOMETRY_INTERSECTION_WRAPPER));
+    return true;
+}
+
 static bool InstallHooks() {
     if (g_hookReady) return true;
     uintptr_t base = G::base;
@@ -450,12 +480,15 @@ static bool InstallHooks() {
             kExpectedObjectPredicate, sizeof(kExpectedObjectPredicate),
             reinterpret_cast<void*>(&ObjectPredicateDetour),
             reinterpret_cast<void**>(&g_originalObjectPredicate)) &&
-        InstallVtableHook("geometry-intersection-callback",
-            RVA_GEOMETRY_CALLBACK_VTABLE_SLOT,
-            RVA_GEOMETRY_INTERSECTION_WRAPPER,
-            kExpectedGeometryWrapper, sizeof(kExpectedGeometryWrapper),
-            reinterpret_cast<void*>(&GeometryWrapperDetour),
-            reinterpret_cast<void**>(&g_originalGeometryWrapper)) &&
+        // 2026-10-28 build 25640656：几何回调不再是「vtable 槽里直接放函数指针」——
+        //   旧槽 0xE74D58 在本版装的是 0x47C620（一个 jmp thunk），而
+        //   base+0x6E7500（= 旧 0x6D0290 的继任者，前 16 字节除 rip 位移完全一致）
+        //   只出现在 std::function 包装体 `_Func_impl_no_alloc<lambda...>` 的调用槽，
+        //   patch 那个槽会波及所有同类回调 → **不能再用槽替换法**。
+        //   改为和另外三个 hook 一样，直接对函数本体做 trampoline hook。
+        // v1.0.15：改用 5 字节 hook（见 InstallGeometryCallbackHook 注释）——
+        //   旧 14 字节 trampoline 未重定位 RIP 相对指令，导致读档静默崩溃。
+        InstallGeometryCallbackHook() &&
         InstallFunctionHook("placement-entry",
             RVA_IS_PLACEMENT_GIMMICK,
             kExpectedPlacement, sizeof(kExpectedPlacement),
@@ -472,10 +505,12 @@ static bool InstallHooks() {
             g_originalPlacement = nullptr;
         }
         if (g_originalGeometryWrapper) {
-            void* originalFunc =
-                reinterpret_cast<void*>(base + RVA_GEOMETRY_INTERSECTION_WRAPPER);
-            WriteMem(reinterpret_cast<void*>(base + RVA_GEOMETRY_CALLBACK_VTABLE_SLOT),
-                     &originalFunc, sizeof(originalFunc));
+            // v1.0.15：5 字节 hook 回滚——还原首 5 字节并释放 trampoline
+            //   （qol::HookInstall 分配的 relay 常驻 64B，卸载/回滚时不回收，可忽略）
+            qol::HookRemoveEx(
+                static_cast<uintptr_t>(base + RVA_GEOMETRY_INTERSECTION_WRAPPER),
+                kExpectedGeometryWrapper,
+                reinterpret_cast<uintptr_t>(g_originalGeometryWrapper));
             g_originalGeometryWrapper = nullptr;
         }
         if (g_originalObjectPredicate) {
@@ -515,16 +550,24 @@ static bool IsDuplicateInstance() {
 
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("scarecrow");
+    qol::obs::Init(nullptr);  // v1.6.x: 统一观测层接入
+    qol::obs::SetInt("scarecrow", "ready", 1);
+    qol::obs::EventF(1, 2500, L"[Scarecrow] 已加载：观测层接入");
+    // v-local：游戏版本闸门（village.exe 非 v1.20 build 25311578 则不启用）
+    if (!qol::ExeBuildSupported()) {
+        Log("[Scarecrow] 游戏版本不匹配（非 v1.20 build 25311578）→ 本 MOD 不启用\n");
+        return;
+    }
     Log("[Scarecrow] mod_init 开始");
 
     // ---- HotConfig 热调参注册 ----
-    HotConfig_Register("scarecrow", (void*)&RVA_IS_PLACEMENT_GIMMICK, "RVA_IS_PLACEMENT_GIMMICK", HOT_RVA, 0x1DE1A0);
-    HotConfig_Register("scarecrow", (void*)&RVA_PLACEMENT_LAND_PREDICATE, "RVA_PLACEMENT_LAND_PREDICATE", HOT_RVA, 0x1E6E00);
-    HotConfig_Register("scarecrow", (void*)&RVA_PLACEMENT_OBJECT_PREDICATE, "RVA_PLACEMENT_OBJECT_PREDICATE", HOT_RVA, 0x1E01E0);
-    HotConfig_Register("scarecrow", (void*)&RVA_GEOMETRY_INTERSECTION_WRAPPER, "RVA_GEOMETRY_INTERSECTION_WRAPPER", HOT_RVA, 0x6D0290);
+    HotConfig_Register("scarecrow", (void*)&RVA_IS_PLACEMENT_GIMMICK, "RVA_IS_PLACEMENT_GIMMICK", HOT_RVA, 0x1e1270);
+    HotConfig_Register("scarecrow", (void*)&RVA_PLACEMENT_LAND_PREDICATE, "RVA_PLACEMENT_LAND_PREDICATE", HOT_RVA, 0x1e9ed0);
+    HotConfig_Register("scarecrow", (void*)&RVA_PLACEMENT_OBJECT_PREDICATE, "RVA_PLACEMENT_OBJECT_PREDICATE", HOT_RVA, 0x1e32b0);
+    HotConfig_Register("scarecrow", (void*)&RVA_GEOMETRY_INTERSECTION_WRAPPER, "RVA_GEOMETRY_INTERSECTION_WRAPPER", HOT_RVA, 0x6e7500);
     HotConfig_Register("scarecrow", (void*)&RVA_GEOMETRY_CALLBACK_VTABLE_SLOT, "RVA_GEOMETRY_CALLBACK_VTABLE_SLOT", HOT_RVA, 0xE74D58);
-    HotConfig_Register("scarecrow", (void*)&RVA_CURRENT_WORLD_KEY, "RVA_CURRENT_WORLD_KEY", HOT_RVA, 0xE67A0);
-    HotConfig_Register("scarecrow", (void*)&RVA_RESOLVE_GEOMETRY_STATUS, "RVA_RESOLVE_GEOMETRY_STATUS", HOT_RVA, 0x6C3A00);
+    HotConfig_Register("scarecrow", (void*)&RVA_CURRENT_WORLD_KEY, "RVA_CURRENT_WORLD_KEY", HOT_RVA, 0xe9070);
+    HotConfig_Register("scarecrow", (void*)&RVA_RESOLVE_GEOMETRY_STATUS, "RVA_RESOLVE_GEOMETRY_STATUS", HOT_RVA, 0x6dac70);
     HotConfig_Register("scarecrow", (void*)&GIMMICK_DATA_HOLDER_OFFSET, "GIMMICK_DATA_HOLDER_OFFSET", HOT_RVA, 0x240);
     HotConfig_Register("scarecrow", (void*)&GIMMICK_MODULE_NAME_OFFSET, "GIMMICK_MODULE_NAME_OFFSET", HOT_RVA, 0x0E0);
     HotConfig_Poll();
@@ -586,12 +629,12 @@ extern "C" __declspec(dllexport) void unload(void) {
                      kExpectedPlacement, sizeof(kExpectedPlacement));
         }
 
-        // 2. 还原 vtable hook（写回原始函数指针到 vtable 槽位）
+        // 2. 还原几何回调函数本体 hook（v1.0.15：5 字节回滚 + 释放 trampoline）
         if (g_originalGeometryWrapper) {
-            void* originalFunc =
-                reinterpret_cast<void*>(base + RVA_GEOMETRY_INTERSECTION_WRAPPER);
-            WriteMem(reinterpret_cast<void*>(base + RVA_GEOMETRY_CALLBACK_VTABLE_SLOT),
-                     &originalFunc, sizeof(originalFunc));
+            qol::HookRemoveEx(
+                static_cast<uintptr_t>(base + RVA_GEOMETRY_INTERSECTION_WRAPPER),
+                kExpectedGeometryWrapper,
+                reinterpret_cast<uintptr_t>(g_originalGeometryWrapper));
         }
 
         // 3. 释放 trampoline 内存（仅函数 hook 有 trampoline）
@@ -622,6 +665,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_module = hModule;
         DisableThreadLibraryCalls(hModule);
+    }
+    else if (reason == DLL_PROCESS_DETACH) {
+        qol::obs::Shutdown();  // v1.6.x: 解观测层映射（仅本 DLL 视图）
     }
     return TRUE;
 }

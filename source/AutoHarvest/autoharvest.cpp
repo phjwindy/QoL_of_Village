@@ -1,4 +1,6 @@
-// autoharvest.cpp —— AutoHarvest: 自动收集树液提取器中的树液 (v1.9.14 正式版转正：审查通过——DIAG宏0/时间链正确/F4可改键/8键v1.6.2已移除/F9诊断#if0)
+// autoharvest.cpp —— AutoHarvest: 自动收集树液提取器中的树液 (v1.9.16 正式版转正：审查通过——DIAG宏0/时间链正确/F4可改键/8键v1.6.2已移除/F9诊断链已删除)
+//   v1.9.16【P1 修复】背包槽 CAS 竞争失败时缺失保护性 AddRef 释放 → 物品引用
+//     计数永久 +1（永不析构）+ 槽位悬空。现补 else 分支释放并跳过计数。
 //
 // v1.9.2: F4 设箱触发收紧（用户反馈：菜单里按 F4 也弹“自动采集已开启”，
 //         与“对着箱子按才启动”的设计预期不符）——设箱搜索半径 300→95
@@ -22,7 +24,7 @@
 //         ⑥多槽提取器 count 键 fallback 修复。
 // v1.8.6: 掉帧优化——①搜索半径 10000→5000；②增量触发+帧内预算；③移除诊断计时。
 // v1.8.5-diag: FPS 掉帧排查诊断版
-// v1.8.1: ① F9 诊断触发器移除（发布版不应有诊断代码）；
+// v1.8.1: ① F9 诊断触发器移除（发布版不应有诊断代码）；2026-11-07 按用户指令把残留 #if 0 死代码整块删除；
 // v1.8.0: 死档风险修复（3 项高危）：
 //          ① AH-H1: 删除 SapClearExtractorSlot 死代码（含手写引用计数+vtable 析构+nullptr 写 backing）
 //          ② AH-H3: 合并失败假回滚→真正回滚（反向 itemAdjust 撤销已成功合并）
@@ -62,22 +64,19 @@
 #include <atomic>
 
 #include "logging.h"
+#include "exe_guard.h"   // v-local: 统一游戏版本闸门
 #include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
 #include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
 #include "hotkey.h"
 #include "game_window.h"   // HUD owner 绑定游戏窗口
 #include "patch_safety.h"
+#include "quickmenu.h"     // F2 统一菜单接入（P0）
+#include "obs.h"           // 统一 HUD 观测层（toast + 机器可读寄存器）
 
 // 日志开关：发布版禁用日志输出
 // 调试时取消注释下行即可开启日志
-// #define AUTOHARVEST_LOGGING   // v1.9.14 转正：日志关闭（定位时取消注释重编）
-#ifdef AUTOHARVEST_LOGGING
-#else
-  #define LogOpen(x)  ((void)0)
-  #define Log(...)    ((void)0)
-  #define LogV(...)   ((void)0)
-  #define LogClose()  ((void)0)
-#endif
+// 日志运行时开关（2026-10-24）：编译期宏 AUTOHARVEST_LOGGING 退役，改由 QoL_Shared 运行时门控。
+// 开启方式：游戏根 qol_log.cfg 写 level=1（约 1s 生效，免重编免重启）；缺省/level=0 为静默。
 
 // [diag] 诊断日志门控（默认关）；调试时 #define DIAG_AUTOHARVEST 1 开启
 #ifndef DIAG_AUTOHARVEST
@@ -90,7 +89,7 @@ using u32 = std::uint32_t;
 // ============================================================
 // 常量（build 25311578 / v1.20，2026-09-30 由 ChestSort/ProductionAuto 实测迁移）
 // ============================================================
-static constexpr uintptr_t RVA_GAME_ROOT = 0x10FCBB0;
+static constexpr uintptr_t RVA_GAME_ROOT = 0x111cc90;
 
 // ---- 指针链偏移（与 ChestSort / AutoFish 一致）----
 static constexpr uintptr_t ROOT_PLAYER_OFFSET       = 0x208;
@@ -99,8 +98,8 @@ static constexpr uintptr_t PLAYER_ITEMS_OFFSET         = 0x32c0;
 
 // ---- 世界对象注册表 / 空间搜索（与 ChestSort 一致）----
 // v1.09 (build 25094764): RTTI 链扫描确认 vtable 从 0xE17168 移至 0xE1C168
-static constexpr uintptr_t WORLD_OBJECT_REGISTRY_RVA     = 0x1104C80;
-static constexpr uintptr_t SEARCH_CALLBACK_VTABLE_RVA    = 0xE3E608;   // v1.20 ALL_OBJECTS vtable（与 ChestSort 一致）
+static constexpr uintptr_t WORLD_OBJECT_REGISTRY_RVA     = 0x1124D60;
+static constexpr uintptr_t SEARCH_CALLBACK_VTABLE_RVA    = 0xE59110;   // v1.20 ALL_OBJECTS vtable（与 ChestSort 一致）
 static constexpr uintptr_t ROOT_MAP_OWNER_OFFSET    = 0x268;
 static constexpr uintptr_t MAP_INFO_OFFSET          = 0x0d8;
 static constexpr uintptr_t MAP_SPATIAL_OWNER_OFFSET = 0x030;
@@ -116,16 +115,14 @@ static constexpr uintptr_t ITEM_STACK_COUNT_OFFSET    = 0x260;
 static constexpr uintptr_t ITEM_RANK_OFFSET           = 0x280;
 static constexpr uintptr_t WORLD_OBJECT_POSITION_OFFSET = 0x230;
 
-
-
 // ---- 空间搜索/物品（与 ChestSort 一致）----
 static constexpr uintptr_t RVA_SPATIAL_SEARCH     = 0;  // AOB 扫描获得
 static constexpr uintptr_t RVA_RAW_VECTOR_FREE    = 0;  // AOB 扫描获得
 static constexpr uintptr_t RVA_INTRUSIVE_RELEASE   = 0;  // AOB 扫描获得
 static constexpr uintptr_t RVA_ITEM_ADJUST         = 0;  // AOB 扫描获得
 static constexpr uintptr_t RVA_PLAYER_CAPACITY     = 0;  // AOB 扫描获得
-static constexpr uintptr_t RVA_BATCH_RECALCULATE   = 0x1470C0;
-static constexpr uintptr_t RVA_BATCH_UI_REFRESH    = 0x0FB170;  // v1.20（与 ChestSort 一致）
+static constexpr uintptr_t RVA_BATCH_RECALCULATE   = 0x149BF0;
+static constexpr uintptr_t RVA_BATCH_UI_REFRESH    = 0xFDB30;  // v1.20（与 ChestSort 一致）
 static constexpr uintptr_t RVA_BATCH_DIRTY         = 0;  // AOB 扫描获得
 
 // ---- 生产机状态结构偏移（build 25094764 / v1.09，从 ProductionAuto 适配）----
@@ -145,19 +142,19 @@ static constexpr size_t    SAP_SLOT_INGREDIENTS         = 8;   // 每槽 8 个�
 static constexpr size_t    SAP_CHEST_SLOTS              = 30;  // 存储箱子 30 格
 
 // ---- 生产函数 RVA（build 25311578 / v1.20，ProductionAuto v1.1.43-diag 实测值）----
-static constexpr uintptr_t RVA_SAP_OUTPUT_HELPER        = 0x170280;  // GimmickProcessPopItem 内部完成辅助
-static constexpr uintptr_t RVA_SAP_STATUS_INT_LOOKUP    = 0x15AE10;  // status+0x18 map 查找（find-or-insert）
-static constexpr uintptr_t RVA_SAP_STATUS_U64_LOOKUP    = 0x15AFD0;  // status+0x58 map 查找（find-or-insert）
-static constexpr uintptr_t RVA_SAP_STATUS_EVENT_LOOKUP  = 0x15A9F0;  // 事件 owner map 查找
-static constexpr uintptr_t RVA_SAP_STATUS_EVENT_NOTIFY  = 0x15A810;  // 事件通知
-static constexpr uintptr_t RVA_SAP_ITEM_ALLOCATE        = 0x8D2980;  // 物品内存分配（size→ptr）
-static constexpr uintptr_t RVA_SAP_ITEM_CTOR            = 0x109100;  // CItemStatus 构造（memory, save, itemId）
-static constexpr uintptr_t RVA_SAP_ITEM_SET_COUNT       = 0x108E60;  // 设置堆叠数（item, count）
-static constexpr uintptr_t RVA_SAP_ITEM_IS_STACKABLE    = 0x1096C0;  // 查询物品可否堆叠（item）→ bool
-static constexpr uintptr_t RVA_SAP_CHEST_PUSH           = 0x35E4E0;  // 入箱（GimmickProcessPushItem 内部）
-static constexpr uintptr_t RVA_SAP_CHEST_COMMIT         = 0x35F1E0;  // 入箱提交
-static constexpr uintptr_t RVA_SAP_SAVE_DATA_GLOBAL     = 0x10FCBB0; // 全局 save data 指针（与 RVA_GAME_ROOT 同）
-static constexpr uintptr_t RVA_SAP_NATIVE_COLLECT       = 0x27E460;  // native_collect（游戏原生收集函数）
+static constexpr uintptr_t RVA_SAP_OUTPUT_HELPER        = 0x173290;  // GimmickProcessPopItem 内部完成辅助
+static constexpr uintptr_t RVA_SAP_STATUS_INT_LOOKUP    = 0x15DB60;  // status+0x18 map 查找（find-or-insert）
+static constexpr uintptr_t RVA_SAP_STATUS_U64_LOOKUP    = 0x15DD20;  // status+0x58 map 查找（find-or-insert）
+static constexpr uintptr_t RVA_SAP_STATUS_EVENT_LOOKUP  = 0x15D740;  // 事件 owner map 查找
+static constexpr uintptr_t RVA_SAP_STATUS_EVENT_NOTIFY  = 0x15D560;  // 事件通知
+static constexpr uintptr_t RVA_SAP_ITEM_ALLOCATE        = 0x8EA970;  // 物品内存分配（size→ptr）
+static constexpr uintptr_t RVA_SAP_ITEM_CTOR            = 0x10bb70;  // CItemStatus 构造（memory, save, itemId）
+static constexpr uintptr_t RVA_SAP_ITEM_SET_COUNT       = 0x10B8D0;  // 设置堆叠数（item, count）
+static constexpr uintptr_t RVA_SAP_ITEM_IS_STACKABLE    = 0x10C130;  // 查询物品可否堆叠（item）→ bool
+static constexpr uintptr_t RVA_SAP_CHEST_PUSH           = 0x373180;  // 入箱（GimmickProcessPushItem 内部）
+static constexpr uintptr_t RVA_SAP_CHEST_COMMIT         = 0x373E80;  // 入箱提交
+static constexpr uintptr_t RVA_SAP_SAVE_DATA_GLOBAL = 0x111cc90; // 全局 save data 指针（与 RVA_GAME_ROOT 同）
+static constexpr uintptr_t RVA_SAP_NATIVE_COLLECT       = 0x286CC0;  // native_collect（游戏原生收集函数）
 static constexpr uintptr_t SAP_ITEM_ALLOC_SIZE           = 0x2C0;    // CItemStatus 分配大小（反汇编 0x16614C 确认）
 static constexpr uintptr_t SAP_ITEM_REF_COUNT_OFFSET    = 0x08;     // CItemStatus 引用计数（AddRef/Release 用）
 static constexpr uintptr_t SAP_ITEM_RANK_OFFSET         = 0x280;    // CItemStatus rank 字段（反汇编 0x1664EC 确认）
@@ -217,7 +214,6 @@ using FnPlayerCapacity   = int(__fastcall*)(void*);
 using FnBatchRecalc      = void(__fastcall*)(void*, bool);
 using FnBatchUIRefresh   = void(__fastcall*)(void*, bool);
 using FnBatchDirty       = void(__fastcall*)(void*, int);
-
 
 struct CommandItem {
     void* item;
@@ -289,7 +285,6 @@ namespace G {
     FnSapNativeCollect      sapNativeCollect      = nullptr;   // 游戏原生收集函数（诊断用）
     FnSapItemIsStackable    sapItemIsStackable    = nullptr;
     bool sapFunctionsReady  = false;
-
 
     // 状态
     void* storageChest = nullptr;            // 存储箱子 status 指针
@@ -572,7 +567,6 @@ static bool IsChestStatus(void* status) {
     memcpy(buf, moduleNamePtr, len + 1);
     return strcmp(buf, "gimmick_chest") == 0;
 }
-
 
 // 前向声明：游戏原始秒数读取（定义在文件后部）
 static bool ReadGameRawSecond(std::int64_t* outSec);
@@ -890,8 +884,6 @@ static size_t SearchSapExtractors(void* spatialIndex, const float* playerPos,
     return count;
 }
 
-
-
 // v1.9.6: SEH 包装的 itemAdjust 调用——防止原生函数异常导致崩溃（H8+D1）
 // 返回 false 表示调用异常（SEH 捕获），调用方应执行回滚或中止
 __declspec(noinline) static bool SafeItemAdjust(void* item, int delta) {
@@ -994,6 +986,13 @@ static size_t TransferToChest(void* player, void* chestStatus) {
 
         // v1.8.7: 先释放保护性 AddRef，再 intrusiveRelease 背包引用（释放顺序统一）
         // 清空背包槽位指针并释放引用
+        // v1.9.16【P1 修复】CAS 失败分支此前缺失，导致两个后果：
+        //   ① 保护性 AddRef 永久泄漏 → 物品引用计数永不归零 → 物品对象
+        //      永不析构（内存泄漏），且背包槽仍指向 stackCount 已减到 0
+        //      的物品 → 槽位悬空，表现为"背包格子消失/物品取不出来"；
+        //   ② 竞争失败却仍计入 movedStacks，统计失真。
+        //   修复：竞争失败时释放保护引用后直接 continue（不计数、不
+        //   intrusiveRelease——槽引用归属已随 CAS 失败转移给新持有者）。
         {
             void* observed = InterlockedCompareExchangePointer(
                 reinterpret_cast<void* volatile*>(&slots[i]), nullptr, item);
@@ -1002,6 +1001,12 @@ static size_t TransferToChest(void* player, void* chestStatus) {
                     reinterpret_cast<uintptr_t>(item) + sizeof(void*)));  // 释放保护性 AddRef
                 void* slotOwnedRef = item;
                 if (G::intrusiveRelease) G::intrusiveRelease(&slotOwnedRef);  // 释放背包引用
+            } else {
+                InterlockedDecrement(reinterpret_cast<volatile LONG*>(
+                    reinterpret_cast<uintptr_t>(item) + sizeof(void*)));
+                Log("[AutoHarvest] [transfer] slot CAS lost, skip itemId=%llu",
+                    info.itemId);
+                continue;
             }
         }
 
@@ -1722,162 +1727,14 @@ static size_t CollectFromSapExtractor(void* player, void* extractorStatus, void*
 
     if (movedStacks > 0) {
         Log("[AutoHarvest] [sap] 从树液提取器转移 %d 堆到存储箱", (int)movedStacks);
+        qol::obs::EventF(1, 2200, L"树液提取器转移 %d 堆", (int)movedStacks);
+        qol::obs::SetInt("autoharvest", "sap", (int)movedStacks);
     }
 
     return movedStacks;
 }
 
     // 判断提取器是否有树液可采（读取 status map，不依赖 0x2b8 数组）
-
-// ---- 诊断：实测调用 native_collect（F9 触发）----
-// 目的：确认 native_collect 的真实参数约定与行为。
-// 调用前 dump 提取器槽位与背包，调用后再次 dump，对比差异。
-// v1.8.1: 发布版移除 F9 诊断链（#if 0 包裹，不参与编译）
-#if 0
-static void DumpExtractorSlotState(void* status, const char* tag) {
-    if (!status) return;
-    // 0x58 map: itemID0/1/2
-    for (size_t s = 0; s < 3; ++s) {
-        char idKey[8] = {}; _snprintf_s(idKey, sizeof(idKey), _TRUNCATE, "itemID%zu", s);
-        u64 idv = 0;
-        SapReadStatusMapValue(status, SAP_STATUS_ITEMID_MAP_OFFSET, idKey, &idv, false);
-        char cntKey[9] = {}; _snprintf_s(cntKey, sizeof(cntKey), _TRUNCATE, "count");
-        u64 cv = 0;
-        SapReadStatusMapValue(status, SAP_STATUS_ITEMVAL_MAP_OFFSET, cntKey, &cv, true);
-        // count{slot} 后缀
-        char cntKey2[9] = {}; _snprintf_s(cntKey2, sizeof(cntKey2), _TRUNCATE, "count%zu", s);
-        u64 cv2 = 0;
-        SapReadStatusMapValue(status, SAP_STATUS_ITEMVAL_MAP_OFFSET, cntKey2, &cv2, true);
-        Log("[AutoHarvest] [nc] %s slot%zu itemID=%llu count=%llu count%zu=%llu",
-            tag, s, (unsigned long long)idv,
-            (unsigned long long)cv, s, (unsigned long long)cv2);
-    }
-    // 时间戳
-    for (int si = 0; si < 3; ++si) {
-        if (IsReadable((void*)((uintptr_t)status + SAP_STATUS_TIME_VALUE_OFFSET + si * sizeof(u64)), sizeof(u64)) &&
-            IsReadable((void*)((uintptr_t)status + SAP_STATUS_CREATE_TIME_OFFSET + si * sizeof(u64)), sizeof(u64))) {
-            u64 st = *(const u64*)((unsigned char*)status + SAP_STATUS_TIME_VALUE_OFFSET + si * sizeof(u64));
-            u64 du = *(const u64*)((unsigned char*)status + SAP_STATUS_CREATE_TIME_OFFSET + si * sizeof(u64));
-            Log("[AutoHarvest] [nc] %s ts slot%d start=%llu dur=%llu end=%llu",
-                tag, si, (unsigned long long)st, (unsigned long long)du, (unsigned long long)(st + du));
-        }
-    }
-    { std::int64_t rs = 0; if (ReadGameRawSecond(&rs)) {
-        Log("[AutoHarvest] [nc] %s gameNow rawSec=%lld", tag, (long long)rs);
-    }}
-
-    // 0x2b8 backing
-    void** items = nullptr;
-    if (IsReadable((void*)((uintptr_t)status + SAP_STATUS_ITEM_LIST_OFFSET), sizeof(void*))) {
-        items = *(void***)((unsigned char*)status + SAP_STATUS_ITEM_LIST_OFFSET);
-        if (items && IsReadable(items, 3 * SAP_SLOT_INGREDIENTS * sizeof(void*))) {
-            for (int i = 0; i < 3 * SAP_SLOT_INGREDIENTS; ++i) {
-                if (items[i]) {
-                    u64 obj0 = 0;
-                    if (IsReadable(items[i], 0x10)) obj0 = *(const u64*)items[i];
-                    Log("[AutoHarvest] [nc] %s items[%d]=%p obj0=0x%llX",
-                        tag, i, items[i], (unsigned long long)obj0);
-                }
-            }
-        }
-    }
-    // 背包：root(+0x208)->player_obj(+0x32B8)->items(+0x32C0)
-    void* player = nullptr;
-    {
-        void* root = *(void**)(G::base + G::rvaGameRoot);
-        if (root && IsReadable((void*)((uintptr_t)root + ROOT_PLAYER_OFFSET), sizeof(void*))) {
-            void* playerObj = *(void**)((unsigned char*)root + ROOT_PLAYER_OFFSET);
-            if (playerObj && IsReadable((void*)((uintptr_t)playerObj + PLAYER_OBJECT_STATUS_OFFSET), sizeof(void*))) {
-                void* playerStatus = *(void**)((unsigned char*)playerObj + PLAYER_OBJECT_STATUS_OFFSET);
-                player = playerStatus;
-                if (playerStatus && IsReadable((void*)((uintptr_t)playerStatus + PLAYER_ITEMS_OFFSET), 30 * sizeof(void*))) {
-                    void** slots = *(void***)((unsigned char*)playerStatus + PLAYER_ITEMS_OFFSET);
-                    if (slots && IsReadable(slots, 30 * sizeof(void*))) {
-                        int n = 0;
-                        for (int i = 0; i < 30; ++i) {
-                            if (slots[i]) {
-                                u64 idv = 0, cntv = 0;
-                                if (IsReadable(slots[i], 0x10)) idv = *(const u64*)slots[i];
-                                if (IsReadable((void*)((uintptr_t)slots[i] + ITEM_STACK_COUNT_OFFSET), sizeof(int)))
-                                    cntv = (u64)(*(const int*)((unsigned char*)slots[i] + ITEM_STACK_COUNT_OFFSET));
-                                Log("[AutoHarvest] [nc] %s inv[%d]=%p id=0x%llX cnt=%llu",
-                                    tag, i, slots[i], (unsigned long long)idv, (unsigned long long)cntv);
-                                if (++n >= 10) break;
-                            }
-                        }
-                        if (n == 0) Log("[AutoHarvest] [nc] %s inv empty", tag);
-                    } else {
-                        Log("[AutoHarvest] [nc] %s slots null/unreadable", tag);
-                    }
-                } else {
-                    Log("[AutoHarvest] [nc] %s playerStatus items unreadable", tag);
-                }
-            } else {
-                Log("[AutoHarvest] [nc] %s playerObj unreadable", tag);
-            }
-        }
-    }
-}
-
-static void ProbeNativeCollect() {
-    Log("[AutoHarvest] [nc] ===== F9 诊断：native_collect 实测 =====");
-    if (!G::sapNativeCollect) { Log("[AutoHarvest] [nc] native_collect 未绑定"); return; }
-
-    // 找最近的提取器
-    WorldContext ctx = {};
-    if (!GetWorldContext(&ctx)) { Log("[AutoHarvest] [nc] 无法获取世界上下文"); return; }
-    SapExtractorCandidate extractors[MAX_EXTRACTORS] = {};
-    size_t n = SearchSapExtractors(ctx.spatialIndex, ctx.position, extractors, MAX_EXTRACTORS);
-    if (n == 0) { Log("[AutoHarvest] [nc] 未找到提取器"); return; }
-    // 取最近
-    void* status = extractors[0].status;
-    Log("[AutoHarvest] [nc] 目标提取器 status=%p dist=%.2f", status, sqrtf(extractors[0].distSq));
-
-    // 读提取器 baseID：status->holder(+0x240)->data(+0)->u64 baseID
-    // 反汇编确认：ProductionReadGimmickType 从 data+0 读 u64 gimmickId
-    // 已知 gimmick_sap_extractor = 240250000
-    u64 baseId = 0;
-    {
-        void* holder = nullptr;
-        if (ReadPtr(status, GIMMICK_DATA_HOLDER_OFFSET, &holder)) {
-            void* data = nullptr;
-            if (ReadPtr(holder, 0, &data) && data && IsReadable(data, sizeof(u64))) {
-                baseId = *(const u64*)((unsigned char*)data);
-                Log("[AutoHarvest] [nc] baseID=%llu (0x%llX) from data=%p", (unsigned long long)baseId, (unsigned long long)baseId, data);
-            } else {
-                Log("[AutoHarvest] [nc] read data failed holder=%p", holder);
-            }
-        } else {
-            Log("[AutoHarvest] [nc] read holder failed status=%p", status);
-        }
-    }
-    if (baseId == 0) { Log("[AutoHarvest] [nc] baseID=0, skip"); return; }
-    Log("[AutoHarvest] [nc] expected=240250000 actual=%llu %s", (unsigned long long)baseId, baseId == 240250000ULL ? "(match)" : "(MISMATCH!)");
-
-    Log("[AutoHarvest] [nc] === before ===");
-    DumpExtractorSlotState(status, "before");
-
-    // 调用 native_collect(baseID, status, nullptr, nullptr)
-    // 约定：rcx=baseID(u64), rdx=machineStatus(void*)
-    void* ret = nullptr;
-    __try {
-        ret = G::sapNativeCollect(baseId, nullptr, nullptr, reinterpret_cast<void*>(2));
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        Log("[AutoHarvest] [nc] native_collect SEH! baseID=%llu", (unsigned long long)baseId);
-        ret = nullptr;
-    }
-    Log("[AutoHarvest] [nc] ret=%p (baseID=%llu)", ret, (unsigned long long)baseId);
-
-    Log("[AutoHarvest] [nc] === 后调用状态 ===");
-    DumpExtractorSlotState(status, "after");
-
-    // 刷新背包/箱子 UI
-    if (G::batchRecalc) { __try { G::batchRecalc(ctx.player, false); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
-    if (G::batchUIRefresh) { __try { G::batchUIRefresh(ctx.player, true); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
-    if (G::batchDirty) { __try { G::batchDirty(ctx.player, 0x2bc); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
-    Log("[AutoHarvest] [nc] ===== 诊断结束 =====");
-}
-#endif // #if 0 F9 诊断链（发布版不编译）
 
     static bool HasSapToCollect(void* extractorStatus) {
         if (!extractorStatus) return false;
@@ -2037,6 +1894,8 @@ static void DoHarvestCycle(WorldContext* ctx) {
     size_t moved = TransferToChest(ctx->player, G::storageChest);
     if (moved > 0) {
         Log("[AutoHarvest] 转移 %zu 堆到存储箱", moved);
+        qol::obs::EventF(1, 2200, L"已收纳 %zu 组到储物箱", moved);
+        qol::obs::SetInt("autoharvest", "chest", (int)moved);
         totalHarvested += moved;
     }
 
@@ -2282,16 +2141,15 @@ static bool InitHud() {
 
 static void UpdateHudPosition() {
     if (!g_hudWindow) return;
-    MONITORINFO mi = {};
-    mi.cbSize = sizeof(mi);
-    HMONITOR mon = MonitorFromWindow(QolFindGameWindow(), MONITOR_DEFAULTTOPRIMARY);
-    if (!GetMonitorInfoW(mon, &mi)) {
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
-    }
+    // v1.9.17【KB-113 定位修复】原实现锚「屏幕工作区」左上角 +24/+94，窗口化
+    //   游玩时浮层被画到游戏窗口外的桌面上。2026-11-06 实测客户区
+    //   [79,579,1999,1659] 而 HUD 在 [24,94,224,154]（重叠率 0，玩家完全看不到），
+    //   日志却写着已显示。改为锚定游戏客户区；纵向槽位 280 避开
+    //   AutoFish 24 / EyeFix 140 / Sower 210。
     const int width = 200;
     const int height = 60;
-    const int x = mi.rcWork.left + 24;
-    const int y = mi.rcWork.top + 94;
+    int x = 24, y = 280;
+    QolAnchorToClient(24, 280, width, height, &x, &y);
     SetWindowPos(g_hudWindow, HWND_TOPMOST, x, y, width, height,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
@@ -2372,7 +2230,6 @@ static void PumpHud() {
 // ============================================================
 #include "aobscan.h"
 
-
 // ============================================================
 // 输入处理
 // ============================================================
@@ -2394,27 +2251,13 @@ static void PollInput() {
     }
     if (f4Pressed) {
         HandleSetStorageChest();
+        // 2026-11-07: 按键确认不依赖世界上下文（HandleSetStorageChest 在
+        // GetWorldContext 失败时会静默早退，旧版因此「按了 F4 什么都没出现」）。
+        qol::obs::EventF(1, 2200, L"[AutoHarvest] F4 已按下 \u00B7 存储箱=%s",
+                         G::chestSet ? L"\u5DF2\u8BBE\u7F6E" : L"\u672A\u8BBE\u7F6E");
     }
 
     // v1.6.2: 8 键已移除——F4 设箱=自动开始, F4 再按=取消+停止
-
-    // ---- F9: 诊断触发（native_collect 实测，仅诊断版）----
-    // v1.8.1: 发布版移除 F9 诊断触发器（#if 0 包裹，不参与编译）
-#if 0
-    static bool s_f9NeedsRelease = true;
-    bool f9Down = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
-    bool f9Pressed = false;
-    if (s_f9NeedsRelease) {
-        if (!f9Down) s_f9NeedsRelease = false;
-    } else if (f9Down) {
-        f9Pressed = true;
-        s_f9NeedsRelease = true;
-    }
-    if (f9Pressed) {
-        Log("[AutoHarvest] [nc] F9 按下，触发 native_collect 诊断");
-        ProbeNativeCollect();
-    }
-#endif
 
     // ---- 分块空间搜索（每帧只搜一个小块，单帧 DoSpatialSearch 开销恒定）----
     // v1.8.9: 由「单次全范围搜索+过滤分片」改为「搜索本身分块」——每帧执行一个
@@ -2558,10 +2401,31 @@ static void PollInput() {
 }
 
 // ============================================================
+// QoL 快捷菜单导出（宿主：ModManager F2 / F1）
+//   F4「设置/取消存储箱子」开关，复用 HandleSetStorageChest()
+// ============================================================
+static bool IsAutoHarvestChestOn() {
+    return G::chestSet;
+}
+extern "C" __declspec(dllexport) int QolQuickMenuItems(
+        QolQuickMenuItem* items, int maxItems) {
+    int n = 1;  // 自动收纳到储物箱（与 F4 同义）
+    if (items && maxItems >= 1)
+        items[0] = { "自动收纳(储物箱)", IsAutoHarvestChestOn, HandleSetStorageChest };
+    return n;
+}
+
+// ============================================================
 // 插件入口
 // ============================================================
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("autoharvest");
+    qol::obs::Init(nullptr);   // 统一 HUD 观测层：首 DLL 建共享映射 + 浮层窗口
+    // v-local：游戏版本闸门（village.exe 非 v1.20 build 25311578 则不启用）
+    if (!qol::ExeBuildSupported()) {
+        Log("[AutoHarvest] 游戏版本不匹配（非 v1.20 build 25311578）→ 本 MOD 不启用\n");
+        return;
+    }
     Log("[AutoHarvest] mod_init 开始");
     QolHotKeysInit(&g_hotkeys, "autoharvest");
     QolHotKeysSetDefault(&g_hotkeys, "F4");
@@ -2674,6 +2538,10 @@ extern "C" __declspec(dllexport) void mod_tick(void) {
 
 extern "C" __declspec(dllexport) void unload(void) {
     Log("[AutoHarvest] unload");
+    // v1.9.15: 卸载清理——销毁 HUD 窗口 + 释放字体，避免 WndProc/句柄悬空引用已卸载 DLL
+    if (g_hudWindow)    { DestroyWindow(g_hudWindow);    g_hudWindow = nullptr; }
+    if (g_hudFont)      { DeleteObject(g_hudFont);       g_hudFont = nullptr; }
+    if (g_hudFontSmall) { DeleteObject(g_hudFontSmall);  g_hudFontSmall = nullptr; }
     LogClose();
 }
 
@@ -2682,6 +2550,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_autoharvestModule = hModule;
         DisableThreadLibraryCalls(hModule);
+    } else if (reason == DLL_PROCESS_DETACH) {
+        qol::obs::Shutdown();
     }
     return TRUE;
 }

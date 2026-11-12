@@ -1,5 +1,10 @@
-// modmanager.cpp —— ModManager v1.2.6: 游戏内 MOD 开关管理器 + F2 快捷菜单
+// modmanager.cpp —— ModManager v1.2.26: 游戏内 MOD 开关管理器 + F2 快捷菜单
 //
+// v1.2.26: ①修复 F2 快捷菜单完全不显示（UpdateLayeredWindow 用 AC_SRC_ALPHA，
+//          但 GDI 不写 32bpp DIB 的 alpha 字节 → 整窗 alpha=0 全透明；
+//          改常量 alpha）。②「功能N」按功能分组编号，不再按键格顺序。
+// v1.2.25: 修复键盘改键失败（面板为 WS_EX_NOACTIVATE 收不到 WM_KEYDOWN/UP，
+//          改用 GetAsyncKeyState 轮询捕获）+ 多热键 MOD 键格上方标注"功能N"。
 // v1.1.2: static 缓冲区扩容（16→64 槽）+ TerminateProcess 前存档检测。
 // v1.1.1 修复：注册表清理——移除退役 SaveBackup/LangHelper、去重第三方 MOD 重复条目。
 //              logging.cpp ASCII 快速路径（共享框架更新）。
@@ -28,6 +33,7 @@
 // 设计参考：settings_panel.inl（权威源码）+ prototype-v2.html（视觉风格）
 
 #include <windows.h>
+#include "obs.h"              // v1.6.x: 统一观测层（AI 可读寄存器 + toast）
 #include <shlobj.h>   // SHGetFolderPathW
 #include <cstdint>
 #include <cstdio>
@@ -50,21 +56,16 @@
 // 日志（QoL_Shared）
 // ============================================================
 #include "logging.h"
+#include "exe_guard.h"   // v-local: 统一游戏版本闸门
 #include "budget.h"    // v1.2.3: P0 性能探针读取（共享内存跨 DLL）
 #include "game_window.h"  // v1.2.6: HUD 可见性守卫（失焦隐藏，不飘桌面）
 
 // 日志开关：发布版禁用日志
-// #define MODMANAGER_LOGGING   // v1.2.17 转正：日志关闭（定位时取消注释重编）
-#ifdef MODMANAGER_LOGGING
-#else
-  #define LogOpen(x)  ((void)0)
-  #define Log(...)    ((void)0)
-  #define LogV(...)   ((void)0)
-  #define LogClose()  ((void)0)
-#endif
+// 日志运行时开关（2026-10-24）：编译期宏 MODMANAGER_LOGGING 退役，改由 QoL_Shared 运行时门控。
+// 开启方式：游戏根 qol_log.cfg 写 level=1（约 1s 生效，免重编免重启）；缺省/level=0 为静默。
 
 // 版本号
-#define MODMANAGER_VERSION L"v1.2.7"
+#define MODMANAGER_VERSION L"v1.2.26"
 
 // ============================================================
 // 手柄输入（三路混合：XInput 线程 + HID 直读 DualSense 线程 + joyGetPosEx 回退）
@@ -551,10 +552,15 @@ struct ModEntry {
     wchar_t       hotkeys[6][24]; // 最多 6 个按键，每个最长 24 字符
     int           hotkeyCount;     // 实际按键数（0 = 无热键）
     wchar_t       hotkeyNames[6][32]; // 各热键的功能名（qol_meta.txt 声明）
+    // v1.2.26: 功能分组（用户反馈——Sower 的「5」与「D-pad Left」是同一个
+    //   功能的两种输入，应都标「功能1」，不能因为占了两个键格就标成 1/2）。
+    //   hotkeys[] 是"键槽"维度（一个功能可占多个槽），本组字段记录槽与功能的映射。
+    int           hotkeyFuncCount;      // 功能数（qol_meta 有效行数；无 meta = 1）
+    int           hotkeyGroupOf[6];     // 每个键槽所属功能号（0-based）
 };
 
 // MOD 模板注册表（只含静态元数据，folder/version 运行时自动填充）
-static ModEntry g_mods[] = {
+static const ModEntry g_modTemplates[] = {
     // ---- QoL 自有 MOD ----
     { L"ChestSort 箱子自动归类", L"ChestSort", L"chestsort.dll", L"4",
       L"qol_chestsort.log", false, nullptr },
@@ -615,12 +621,31 @@ static ModEntry g_mods[] = {
     { L"TimeFreeze 时间冻结", L"TimeFreeze", L"timefreeze.dll", nullptr,
       L"qol_timefreeze.log", false, nullptr },
 
+    { L"SaveGuard 存档守护", L"SaveGuard", L"saveguard.dll", nullptr,
+      L"qol_saveguard.log", false, nullptr },
+
     // ---- ModManager 自身（最后显示，可停用保护）----
     { L"ModManager 模块管理器", L"ModManager", L"modmanager.dll", nullptr,
       L"qol_modmanager.log", true, nullptr },
 };
 
-static constexpr int g_modCount = sizeof(g_mods) / sizeof(g_mods[0]);
+static constexpr int g_modTemplateCount =
+    sizeof(g_modTemplates) / sizeof(g_modTemplates[0]);
+
+// ============================================================
+// 运行时注册表（适配性升级 2026-10-24）
+// g_mods 从编译期数组改为运行时 vector：
+//   模板（白名单）→ g_modTemplates（编译期，中文名/热键/依赖等增强元数据）
+//   运行时注册表 → g_mods（模板 + 表外自动发现的外部 MOD）
+// 外部 MOD（第三方/玩家自装）零配置进面板：自动识别元数据、可整体启停，
+// 文件夹随意命名随意放置——识别靠 modinfo.txt / DLL 本体，不靠命名约定。
+// ============================================================
+static std::vector<ModEntry> g_mods;
+static int g_modCount = 0;   // 运行时 = 模板数 + 外部 MOD 数（mod_init 填充）
+
+// 外部 MOD 条目的字符串所有权（name/folderPrefix/dllName 指向这些存储；
+// 只增不删，保证指针全程有效）
+static std::vector<std::wstring> g_dynStrings;
 
 // ============================================================
 // 全局状态
@@ -674,6 +699,7 @@ static int  g_recStage = 0;      // 录制阶段：0=捕获按键 1=已录完一
 static int  g_recNextSel = 0;    // 选择阶段：0=下一个 1=删除 2=结束
 static bool g_recNextRelease = true;  // 选择阶段手柄边沿触发
 static bool g_recGpWait = false;     // 捕获阶段手柄防抖：进入捕获后先等待所有按键松开
+static bool g_recKbWait = false;     // 捕获阶段键盘防抖：进入捕获后先等待所有按键松开
 static RECT g_keyRects[32][7];   // 各 MOD 各按键标签 + 改键按钮 的命中矩形（绘制时填充）
 
 // 手柄状态
@@ -755,6 +781,78 @@ static void PollGamepadForRecording() {
         g_gamepadCaptured = nullptr;
         RecordKeyWritten();
     }
+}
+
+// ============================================================
+// v1.2.25: 键盘改键录制轮询
+// 根因：管理面板是 WS_EX_NOACTIVATE 窗口，永远不会获得键盘焦点，
+// 因此 WM_KEYDOWN/WM_KEYUP 永远不会投递到本窗口，旧键盘改键路径（依赖 WM_KEYUP 写盘）
+// 实际是死代码 → 表现为"改键失败/按键不生效"。
+// 改用 GetAsyncKeyState 轮询捕获（与上方手柄录制路径对称），绕过焦点限制。
+// ============================================================
+static void VkToName(WORD vk, wchar_t* out, int outLen);  // 前置于下方使用
+static void PollKeyboardForRecording() {
+    if (g_recModIdx < 0) return;       // 未在录制
+    if (g_recStage != 0) return;       // 选择阶段不捕获
+    if (g_gamepadCaptured) return;     // 手柄优先：手柄正在捕获时不抢键
+
+    if (g_capturedVk >= 0) {
+        // 已捕获某键，等其松开 → 写入
+        if (!(GetAsyncKeyState(g_capturedVk) & 0x8000)) {
+            int modIdx = g_recModIdx;
+            int keyIdx = g_recKeyIdx;
+            WORD vk = (WORD)g_capturedVk;
+            wchar_t name[32];
+            VkToName(vk, name, 32);
+            if (modIdx >= 0 && modIdx < g_modCount &&
+                keyIdx >= 0 && keyIdx < g_mods[modIdx].hotkeyCount) {
+                wcscpy_s(g_mods[modIdx].hotkeys[keyIdx], name);
+                std::wstring joined;
+                for (int h = 0; h < g_mods[modIdx].hotkeyCount; ++h) {
+                    if (h > 0) joined += L", ";
+                    joined += g_mods[modIdx].hotkeys[h];
+                }
+                static wchar_t s_kbHkBuf[128];
+                wcscpy_s(s_kbHkBuf, joined.c_str());
+                g_mods[modIdx].hotkey = s_kbHkBuf;
+                WriteHotkeysFile(modIdx);
+                Log("[ModManager] keyboard hotkey recorded: mod=%d key=%ls\n", modIdx, name);
+            }
+            g_capturedVk = -1;
+            RecordKeyWritten();
+        }
+        return;
+    }
+
+    // 防抖：进入捕获后，先等所有键松开，避免录到"进入录制时正按着的旧键"
+    if (g_recKbWait) {
+        for (int vk = 1; vk < 256; ++vk) {
+            if (vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON ||
+                vk == VK_XBUTTON1 || vk == VK_XBUTTON2) continue;
+            if (GetAsyncKeyState(vk) & 0x8000) return;  // 还有键按住，继续等
+        }
+        g_recKbWait = false;
+    }
+
+    // Esc = 取消录制
+    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+        CancelRecordKey();
+        return;
+    }
+
+    // 找当前按下的非修饰键
+    int pressedVk = -1;
+    for (int vk = 1; vk < 256; ++vk) {
+        if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU ||
+            vk == VK_LWIN || vk == VK_RWIN ||
+            vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON ||
+            vk == VK_XBUTTON1 || vk == VK_XBUTTON2) continue;
+        if (GetAsyncKeyState(vk) & 0x8000) { pressedVk = vk; break; }
+    }
+    if (pressedVk < 0) return;  // 没键按下
+
+    g_capturedVk = pressedVk;
+    InvalidateRect(g_panel, nullptr, FALSE);
 }
 
 // ============================================================
@@ -1119,9 +1217,140 @@ static void CleanupStaleFolders() {
 }
 
 // ============================================================
+// 通用 modinfo.txt 字段读取（适配性升级 2026-10-24）
+// modinfo.txt 由 devkit deploy 生成（UTF-8 无 BOM，key=value 行，# 注释）
+// 识别策略改源：元数据优先读清单而非解析文件夹名——玩家/第三方
+// 任意重命名文件夹后，版本与名称仍可正确识别。
+// 返回：true=找到 key 且值非空；out 收到 UTF-8→宽字符 的值
+// ============================================================
+static bool ReadModInfoStr(const std::wstring& dir, const char* key,
+                           wchar_t* out, size_t cchOut) {
+    out[0] = 0;
+    if (!key || !*key) return false;
+    const std::wstring path = dir + L"\\modinfo.txt";
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"rb") != 0 || !f) return false;
+    char buf[1024] = {};
+    const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    const size_t klen = strlen(key);
+    char* ctx = nullptr;
+    for (char* line = strtok_s(buf, "\r\n", &ctx); line;
+         line = strtok_s(nullptr, "\r\n", &ctx)) {
+        if (*line == '#' || *line == 0) continue;      // 注释/空行
+        if (strncmp(line, key, klen) != 0 || line[klen] != '=') continue;
+        char* val = line + klen + 1;
+        char* e = val + strlen(val);                   // 去行尾空白
+        while (e > val && (e[-1] == ' ' || e[-1] == '\t')) *--e = 0;
+        if (*val == 0) return false;
+        MultiByteToWideChar(CP_UTF8, 0, val, -1, out, (int)cchOut);
+        return out[0] != 0;
+    }
+    return false;
+}
+
+// ============================================================
+// 文件夹名是否匹配某个模板前缀（前缀 + '_' 或整名结束，与 ScanModFolders 同规则）
+// ============================================================
+static bool MatchesAnyTemplatePrefix(const wchar_t* name) {
+    for (int i = 0; i < g_modTemplateCount; ++i) {
+        const wchar_t* prefix = g_modTemplates[i].folderPrefix;
+        if (!prefix || !*prefix) continue;
+        const size_t preLen = wcslen(prefix);
+        if (_wcsnicmp(name, prefix, preLen) != 0) continue;
+        if (name[preLen] == 0 || name[preLen] == L'_') return true;
+    }
+    return false;
+}
+
+// ============================================================
+// 外部 MOD 自动发现：扫 Mods\ 与 待用MOD\，凡不匹配任何模板前缀、
+// 且含 DLL 或 modinfo.txt 的文件夹，登记为外部 MOD 条目（thirdParty）。
+// - 显示名：modinfo.txt name= → 文件夹名
+// - DLL 名：目录内第一个 *.dll（小写，供加载状态/加载顺序识别）
+// - 版本/版本闸门：ScanModFolders（modinfo version= 优先）与
+//   PruneIncompatibleMods（game_tag=）本来就按目录工作，自动生效
+// ============================================================
+static void DiscoverExternalMods() {
+    const wchar_t* dirs[2] = { g_modsDir.c_str(), g_storageDir.c_str() };
+    for (int d = 0; d < 2; ++d) {
+        if (!dirs[d] || !*dirs[d]) continue;
+        const std::wstring search = std::wstring(dirs[d]) + L"\\*";
+        WIN32_FIND_DATAW fd = {};
+        HANDLE h = FindFirstFileW(search.c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            if (fd.cFileName[0] == L'.') continue;
+            if (MatchesAnyTemplatePrefix(fd.cFileName)) continue;  // 白名单已登记
+
+            // 去重：Mods 与 待用MOD 同名文件夹只登记一次
+            bool dup = false;
+            for (size_t k = (size_t)g_modTemplateCount; k < g_mods.size(); ++k)
+                if (_wcsicmp(g_mods[k].folderPrefix, fd.cFileName) == 0) {
+                    dup = true; break;
+                }
+            if (dup) continue;
+
+            const std::wstring full = std::wstring(dirs[d]) + L"\\" + fd.cFileName;
+
+            // 目录内第一个 DLL（小写化，供状态/顺序识别）
+            wchar_t dllLower[MAX_PATH] = {};
+            {
+                WIN32_FIND_DATAW fd2 = {};
+                HANDLE h2 = FindFirstFileW((full + L"\\*.dll").c_str(), &fd2);
+                if (h2 != INVALID_HANDLE_VALUE) {
+                    wcsncpy_s(dllLower, fd2.cFileName, _TRUNCATE);
+                    _wcslwr_s(dllLower);
+                    FindClose(h2);
+                }
+            }
+
+            // 准入：有 modinfo.txt 或有 DLL；纯杂物目录跳过
+            wchar_t infoName[128] = {};
+            const bool hasInfo = ReadModInfoStr(full, "name", infoName, 128);
+            if (!hasInfo && !dllLower[0]) continue;
+
+            // 字符串所有权入池
+            const size_t iFolder = g_dynStrings.size();
+            g_dynStrings.push_back(std::wstring(fd.cFileName));
+            const size_t iName = g_dynStrings.size();
+            g_dynStrings.push_back(hasInfo && infoName[0]
+                                       ? std::wstring(infoName)
+                                       : std::wstring(fd.cFileName));
+            bool hasDll = false;
+            size_t iDll = 0;
+            if (dllLower[0]) {
+                iDll = g_dynStrings.size();
+                g_dynStrings.push_back(std::wstring(dllLower));
+                hasDll = true;
+            }
+
+            ModEntry e = {};
+            e.name         = g_dynStrings[iName].c_str();
+            e.folderPrefix = g_dynStrings[iFolder].c_str();
+            e.dllName      = hasDll ? g_dynStrings[iDll].c_str() : nullptr;
+            e.hotkey       = nullptr;      // 第三方热键由 ScanThirdPartyHotkeys 扫描
+            e.logFile      = nullptr;
+            e.isSelf       = false;
+            e.dependsOn    = nullptr;
+            e.thirdParty   = true;
+            e.rekeyable    = false;
+            g_mods.push_back(e);
+            Log("[ModManager] 外部 MOD 已登记: %ls (in %ls)%ls\n",
+                fd.cFileName, d == 0 ? L"Mods" : L"\x5F85\x7528MOD",
+                hasDll ? L"" : L" [无DLL]");
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+}
+
+// ============================================================
 // 运行时扫描目录：为每个 MOD 模板自动匹配实际文件夹 + 提取版本号
 // 匹配规则：文件夹名以 folderPrefix 开头，且下一个字符是 '_' 或字符串结束
-// 版本提取：第一个 '_' 之后的内容（如 v1.2.2、v0.3.2_diag、gloaming）
+// 版本提取：优先 modinfo.txt 的 version=（适配性升级 2026-10-24），
+//           回退文件夹名第一个 '_' 之后的内容（如 v1.2.2、v0.3.2_diag）
 // ============================================================
 static void ScanModFolders() {
     for (int i = 0; i < g_modCount; ++i) {
@@ -1150,10 +1379,16 @@ static void ScanModFolders() {
                 // 匹配成功
                 wcsncpy_s(g_mods[i].folder, MAX_PATH, fd.cFileName, _TRUNCATE);
 
-                // 提取版本：第一个 '_' 之后内容
-                const wchar_t* us = wcschr(fd.cFileName, L'_');
-                if (us && us[1]) {
-                    wcsncpy_s(g_mods[i].version, 64, us + 1, _TRUNCATE);
+                // 版本提取：优先 modinfo.txt version=（改源识别），
+                // 无清单/无字段时回退文件夹名解析
+                wchar_t vInfo[64] = {};
+                if (ReadModInfoStr(std::wstring(dirs[d]) + L"\\" + fd.cFileName,
+                                   "version", vInfo, 64)) {
+                    wcsncpy_s(g_mods[i].version, 64, vInfo, _TRUNCATE);
+                } else {
+                    const wchar_t* us = wcschr(fd.cFileName, L'_');
+                    if (us && us[1])
+                        wcsncpy_s(g_mods[i].version, 64, us + 1, _TRUNCATE);
                 }
 
                 Log("[ModManager] auto: %ls → folder=[%ls] version=[%ls] (in %ls)\n",
@@ -1233,7 +1468,7 @@ static void ParseHotkeys(ModEntry& mod);
 
 // ============================================================
 // 第三方 MOD 热键自动扫描
-// 
+//
 // 优先级：qol_meta.txt > README 扫描 > 缓存
 // qol_meta.txt 格式（UTF-8，放在 MOD 目录内）：
 //   # 注释行
@@ -1286,13 +1521,13 @@ static bool FindInCache(const std::string& cache, const std::string& folder,
         line = cache.substr(pos, eol - pos);
         if (!line.empty() && line.back() == '\r') line.pop_back();
         pos = eol + 1;
-        
+
         // 解析 folder|hotkey|rekeyable
         size_t p1 = line.find('|');
         if (p1 == std::string::npos) continue;
         std::string fol = line.substr(0, p1);
         if (fol != folder) continue;
-        
+
         size_t p2 = line.find('|', p1 + 1);
         if (p2 == std::string::npos) {
             outHotkey = line.substr(p1 + 1);
@@ -1349,14 +1584,15 @@ static bool ParseQolMeta(ModEntry& mod, const std::wstring& modDir) {
     std::wstring metaPath = modDir + L"\\qol_meta.txt";
     std::string content = ReadFileContent(metaPath);
     if (content.empty()) return false;
-    
+
     bool found = false;
     bool rekeyable = false;
     int maxKeys = 6;
     std::string hotkeys[6];
     std::string hotkeyNames[6];
+    int keyCountPerFunc[6] = {};   // v1.2.26: 每个功能行里含几个键（逗号分隔）
     int count = 0;
-    
+
     // 逐行解析
     size_t pos = 0;
     while (pos < content.size() && count < maxKeys) {
@@ -1365,14 +1601,14 @@ static bool ParseQolMeta(ModEntry& mod, const std::wstring& modDir) {
         std::string line = content.substr(pos, eol - pos);
         if (!line.empty() && line.back() == '\r') line.pop_back();
         pos = eol + 1;
-        
+
         // 跳过空行和注释
         if (line.empty() || line[0] == '#') continue;
-        
+
         // rekeyable=true/false
         if (line == "rekeyable=true") { rekeyable = true; found = true; continue; }
         if (line == "rekeyable=false") { rekeyable = false; found = true; continue; }
-        
+
         // maxkeys=N
         if (line.substr(0, 8) == "maxkeys=") {
             maxKeys = atoi(line.c_str() + 8);
@@ -1381,15 +1617,15 @@ static bool ParseQolMeta(ModEntry& mod, const std::wstring& modDir) {
             found = true;
             continue;
         }
-        
+
         // [hotkey] section header
         if (line == "[hotkey]") { found = true; continue; }
-        
+
         // 1=F6|功能名  格式
         size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
         std::string keyPart = line.substr(eq + 1);
-        
+
         // 提取功能名（| 分隔）
         std::string keyStr, nameStr;
         size_t bar = keyPart.find('|');
@@ -1399,40 +1635,60 @@ static bool ParseQolMeta(ModEntry& mod, const std::wstring& modDir) {
         } else {
             keyStr = keyPart;
         }
-        
+
         // 去除前后空格
         while (!keyStr.empty() && keyStr.back() == ' ') keyStr.pop_back();
         while (!keyStr.empty() && keyStr.front() == ' ') keyStr.erase(0, 1);
-        
+
         if (!keyStr.empty() && keyStr != "none" && count < maxKeys) {
             hotkeys[count] = keyStr;
             hotkeyNames[count] = nameStr;
+            // v1.2.26: 本功能行内部用逗号分隔多个输入源（键盘键 + 手柄键），
+            //   这些键属于同一个功能，必须共用功能号
+            int kn = 1;
+            for (size_t c = 0; c < keyStr.size(); ++c)
+                if (keyStr[c] == ',') kn++;
+            keyCountPerFunc[count] = kn;
             count++;
             found = true;
         }
     }
-    
+
     if (!found || count == 0) return false;
-    
+
     // 拼接热键字符串
     std::string joined;
     for (int i = 0; i < count; ++i) {
         if (i > 0) joined += ", ";
         joined += hotkeys[i];
     }
-    
+
     // v1.1.2: 改用动态分配避免 static 缓冲区轮转覆盖（旧 16 槽轮转在 >16 次
     // 调用后会覆盖早期值，导致 hotkey 指针指向被覆盖的字符串）
     wchar_t* buf = new wchar_t[128];
     MultiByteToWideChar(CP_UTF8, 0, joined.c_str(), -1, buf, 128);
     mod.hotkey = buf;
-    
+
     // 写入功能名
     for (int i = 0; i < count && i < 6; ++i) {
         MultiByteToWideChar(CP_UTF8, 0, hotkeyNames[i].c_str(), -1,
                            mod.hotkeyNames[i], 32);
     }
-    
+
+    // v1.2.26: 生成「键槽 → 功能号」映射。joined 是按功能顺序用 ", " 拼的，
+    //   所以解析出的键槽顺序 = 功能0的所有键、功能1的所有键…… 与
+    //   keyCountPerFunc[] 一一对应。ParseHotkeys 拆分后据此还原功能归属。
+    mod.hotkeyFuncCount = count;
+    {
+        int slot = 0;
+        for (int f = 0; f < count && slot < 6; ++f) {
+            for (int k = 0; k < keyCountPerFunc[f] && slot < 6; ++k) {
+                mod.hotkeyGroupOf[slot] = f;
+                ++slot;
+            }
+        }
+    }
+
     mod.rekeyable = rekeyable;
     Log("[ModManager] qol_meta.txt: %ls -> %hs (rekeyable=%d, count=%d)\n",
         mod.folder, joined.c_str(), rekeyable, count);
@@ -1456,24 +1712,24 @@ static std::string ScanReadmeForHotkeys(const std::string& content) {
         "Home", "End", "Insert", "Delete",
         nullptr
     };
-    
+
     std::string found;
     int count = 0;
-    
+
     // 转小写搜索
     std::string lower;
     lower.reserve(content.size());
     for (char c : content) lower += (char)tolower(c);
-    
+
     for (int i = 0; patterns[i] && count < 6; ++i) {
         std::string pat = patterns[i];
         std::string patLower;
         for (char c : pat) patLower += (char)tolower(c);
-        
+
         // 在全文中搜索
         size_t pos = lower.find(patLower);
         if (pos == std::string::npos) continue;
-        
+
         // 验证：F1 后面不能跟数字（否则可能是 F10~F24 的子串）
         if (pat[0] == 'F' && pat.size() == 2) {
             // 检查后面是否还有数字
@@ -1487,7 +1743,7 @@ static std::string ScanReadmeForHotkeys(const std::string& content) {
             if (isalnum((unsigned char)prev) || prev == '_')
                 continue;
         }
-        
+
         // 去重
         bool dup = false;
         size_t fp = 0;
@@ -1506,7 +1762,7 @@ static std::string ScanReadmeForHotkeys(const std::string& content) {
             count++;
         }
     }
-    
+
     return found;
 }
 
@@ -1521,14 +1777,14 @@ static std::string ScanReadmeForHotkeys(const std::string& content) {
 static void ScanThirdPartyHotkeys() {
     if (g_thirdPartyScanDone) return;
     g_thirdPartyScanDone = true;
-    
+
     std::string cache = ReadHotkeyCache();
     bool cacheChanged = false;
-    
+
     for (int i = 0; i < g_modCount; ++i) {
         if (!g_mods[i].thirdParty) continue;
         if (!g_mods[i].folder[0]) continue;  // 未找到目录
-        
+
         // 确定实际目录路径
         std::wstring modDir;
         std::wstring modsPath = g_modsDir + L"\\" + g_mods[i].folder;
@@ -1538,13 +1794,13 @@ static void ScanThirdPartyHotkeys() {
         else if (GetFileAttributesW(altPath.c_str()) != INVALID_FILE_ATTRIBUTES)
             modDir = altPath;
         if (modDir.empty()) continue;
-        
+
         // 文件夹名（含版本号）作为缓存 key
         char folderNarrow[MAX_PATH] = {};
         WideCharToMultiByte(CP_UTF8, 0, g_mods[i].folder, -1,
                             folderNarrow, sizeof(folderNarrow), nullptr, nullptr);
         std::string folderKey(folderNarrow);
-        
+
         // 1. 查缓存
         std::string cachedHotkey;
         bool cachedRekeyable = false;
@@ -1564,7 +1820,7 @@ static void ScanThirdPartyHotkeys() {
             }
             continue;
         }
-        
+
         // 2. 尝试 qol_meta.txt
         if (ParseQolMeta(g_mods[i], modDir)) {
             // 有 qol_meta.txt，已填充
@@ -1578,7 +1834,7 @@ static void ScanThirdPartyHotkeys() {
             cacheChanged = true;
             continue;
         }
-        
+
         // 3. 扫描 README / 说明文件
         std::string readmeContent;
         // 尝试常见文件名
@@ -1595,12 +1851,12 @@ static void ScanThirdPartyHotkeys() {
                 break;
             }
         }
-        
+
         std::string scannedHotkey;
         if (!readmeContent.empty()) {
             scannedHotkey = ScanReadmeForHotkeys(readmeContent);
         }
-        
+
         // 4. 填充并更新缓存
         if (scannedHotkey.empty()) {
             g_mods[i].hotkey = nullptr;
@@ -1619,7 +1875,7 @@ static void ScanThirdPartyHotkeys() {
         }
         cacheChanged = true;
     }
-    
+
     // 写回缓存
     if (cacheChanged) {
         WriteHotkeyCache(cache);
@@ -1798,7 +2054,7 @@ static void ScanModStatus() {
 // ============================================================
 static void ParseHotkeys(ModEntry& mod) {
     mod.hotkeyCount = 0;
-    if (!mod.hotkey) return;
+    if (!mod.hotkey) { mod.hotkeyFuncCount = 0; return; }
     // 复制到临时缓冲区解析
     wchar_t tmp[128] = {};
     wcsncpy_s(tmp, mod.hotkey, _TRUNCATE);
@@ -1814,6 +2070,14 @@ static void ParseHotkeys(ModEntry& mod) {
             mod.hotkeyCount++;
         }
         token = wcstok_s(nullptr, L",", &ctx);
+    }
+    // v1.2.26 功能分组校验：qol_meta.txt 声明的功能数只有在「不超过实际键槽数」
+    //   时可信（改键后键数可能变少）。否则一律视为单功能——qol_hotkeys.txt 每行
+    //   就是一个功能，行内逗号分隔的键盘键/手柄键是同一功能的两种输入，
+    //   应共用同一个功能号（用户反馈：Sower 的 5 与 D-pad 都是「功能1」）。
+    if (mod.hotkeyFuncCount <= 0 || mod.hotkeyFuncCount > mod.hotkeyCount) {
+        mod.hotkeyFuncCount = mod.hotkeyCount > 0 ? 1 : 0;
+        for (int h = 0; h < 6; ++h) mod.hotkeyGroupOf[h] = 0;
     }
 }
 
@@ -2026,6 +2290,7 @@ static void BeginRecordKey(int modIdx, int keyIdx) {
     g_recKeyIdx = keyIdx;
     g_recStage = 0;            // 进入捕获阶段
     g_recGpWait = true;        // 等待手柄全部松开，避免录到进入时的键
+    g_recKbWait = true;        // 等待键盘全部松开，避免录到进入时的键
     g_capturedVk = -1;
     g_gamepadCaptured = nullptr;
     Log("[ModManager] record start: mod=%ls key=%d\n",
@@ -2054,6 +2319,7 @@ static void RecordNext() {
         g_recKeyIdx++;
         g_recStage = 0;        // 回到捕获阶段
         g_recGpWait = true;    // 防抖：等待手柄全部松开再接受输入
+        g_recKbWait = true;    // 防抖：等待键盘全部松开再接受输入
         g_capturedVk = -1;
         g_gamepadCaptured = nullptr;
         InvalidateRect(g_panel, nullptr, FALSE);
@@ -2069,6 +2335,7 @@ static void CancelRecordKey() {
     g_recKeyIdx = -1;
     g_recStage = 0;
     g_recGpWait = false;
+    g_recKbWait = false;
     g_capturedVk = -1;
     g_gamepadCaptured = nullptr;
     InvalidateRect(g_panel, nullptr, FALSE);
@@ -2085,6 +2352,8 @@ static void ToggleMod(int index) {
         return;
     }
     bool enable = (g_mods[index].toggle != ToggleState::Enabled);
+    // 2026-11-07: 先存名称 —— ScanToggleState() 会重排序 g_mods，index 随即失效。
+    const std::wstring modName = g_mods[index].name;
     if (SetModEnabled(index, enable)) {
         g_restartRequested = true;   // 记录本轮有修改
         g_changedCount++;
@@ -2092,6 +2361,11 @@ static void ToggleMod(int index) {
         else g_changedNames += L"\u3001" + std::wstring(g_mods[index].name); // 、
         ScanToggleState();           // 重排序 + 更新开关
         InvalidateRect(g_panel, nullptr, FALSE);
+        // 2026-11-07: F2 面板切换任意 MOD 都给统一确认（此前无即时反馈，
+        // 无热键的 AutoPet / BirthdayReminder 玩家以为「按键后 HUD 没出来」）。
+        qol::obs::EventF(1, 2200, L"[ModManager] %ls %s", modName.c_str(),
+                         enable ? L"\u5DF2\u542F\u7528\uFF08\u91CD\u542F\u751F\u6548\uFF09"
+                                : L"\u5DF2\u505C\u7528\uFF08\u91CD\u542F\u751F\u6548\uFF09");
         // 不在这里 RequestRestart，等待面板关闭时统一确认
     }
 }
@@ -2451,6 +2725,8 @@ static void PaintPanel(HWND window, HDC destination) {
                     wcscpy_s(keyText, L"\u00B7\u00B7\u00B7");
                 } else if (recording && g_gamepadCaptured) {
                     wcscpy_s(keyText, g_gamepadCaptured);
+                } else if (recording && g_capturedVk >= 0) {
+                    VkToName((WORD)g_capturedVk, keyText, 16);  // 键盘录制中：实时显示所按键
                 } else {
                     wcscpy_s(keyText, g_mods[i].hotkeys[h]);
                 }
@@ -2475,6 +2751,20 @@ static void PaintPanel(HWND window, HDC destination) {
                            recording ? Colors::Accent :
                            (thisConflict ? Colors::Danger : Colors::Accent),
                            keyText, cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                // v1.2.25: 多热键 MOD 在键格上方标"功能N"，便于区分同一 MOD 的多个功能键
+                // v1.2.26: 编号按「功能」而非键格顺序——同一功能的键盘键与手柄键
+                //   共用一个编号（Sower 的「5」「D-pad」都是功能1），
+                //   只有 qol_meta 声明了多个功能才会出现功能2、功能3
+                if (g_mods[i].hotkeyCount > 1 && !recording) {
+                    int fn = g_mods[i].hotkeyGroupOf[h];
+                    if (fn < 0 || fn >= 6) fn = 0;
+                    wchar_t fnText[8];
+                    swprintf_s(fnText, L"\u529F\u80FD%d", fn + 1);   // 功能N
+                    RECT capRect = { cell.left, row.top + S(1),
+                                     cell.right, row.top + S(13) };
+                    DrawTextEx(dc, g_smallFont, Colors::TextDim, fnText, capRect,
+                               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
                 // 记录命中区域（供点击检测）
                 if (i < 32 && h < 6) g_keyRects[i][h] = cell;
                 tagRight -= (KEYCELL_W + KEYCELL_GAP);
@@ -3225,6 +3515,122 @@ static int g_qmCursor = -1;  // v1.2.1: 手柄光标（-1=未选中）
 static bool g_qmGpNeedsRelease = true;  // 手柄边沿触发
 static ULONGLONG g_qmLastNavTick = 0;  // 手柄导航防抖
 
+// v1.2.7【F2 闪烁修复】原 WM_PAINT 直接 BeginPaint GDI 直绘到分层半透明窗口，
+//   每 ~300ms InvalidateRect 重绘 → 分层窗口 GDI 直绘经典闪烁。改为：所有绘制先
+//   渲染到离屏 DIB(内存 DC)，再用 UpdateLayeredWindow 一次性提交（保留 alpha=220
+//   半透明）。这样合成器每帧只换一张完整位图，不再逐笔重绘 → 消除闪烁。
+static HDC     g_qmMemDC   = nullptr;
+static HBITMAP g_qmMemBmp  = nullptr;
+static HBITMAP g_qmOldBmp  = nullptr;  // 内存 DC 初始 1x1 位图，删 DIB 前换回
+static int     g_qmBufW    = 0, g_qmBufH = 0;
+static void QmEnsureBuffer(int w, int h) {
+    if (g_qmMemDC && g_qmBufW == w && g_qmBufH == h) return;
+    if (g_qmMemBmp) {
+        if (g_qmOldBmp) { SelectObject(g_qmMemDC, g_qmOldBmp); g_qmOldBmp = nullptr; }
+        DeleteObject(g_qmMemBmp); g_qmMemBmp = nullptr;
+    }
+    if (!g_qmMemDC) {
+        g_qmMemDC = CreateCompatibleDC(nullptr);
+        g_qmOldBmp = (HBITMAP)GetCurrentObject(g_qmMemDC, OBJ_BITMAP);
+    }
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth       = w;
+    bmi.bmiHeader.biHeight      = -h;   // top-down
+    bmi.bmiHeader.biPlanes      = 1;
+    bmi.bmiHeader.biBitCount    = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    g_qmMemBmp = CreateDIBSection(g_qmMemDC, &bmi, DIB_RGB_COLORS, nullptr, nullptr, 0);
+    if (g_qmMemBmp) {
+        SelectObject(g_qmMemDC, g_qmMemBmp);
+        g_qmBufW = w; g_qmBufH = h;
+    }
+}
+static void QmFreeBuffer() {
+    if (g_qmMemBmp) {
+        if (g_qmOldBmp) { SelectObject(g_qmMemDC, g_qmOldBmp); g_qmOldBmp = nullptr; }
+        DeleteObject(g_qmMemBmp); g_qmMemBmp = nullptr;
+    }
+    if (g_qmMemDC)  { DeleteDC(g_qmMemDC);      g_qmMemDC  = nullptr; }
+    g_qmBufW = g_qmBufH = 0;
+}
+// 把整张菜单绘制到给定 DC（原来 WM_PAINT 的绘制体，参数化 w/h 以复用离屏缓冲）
+static void QmRender(HDC dc, int w, int h) {
+    RECT rc0 = { 0, 0, w, h };
+    HBRUSH bg = CreateSolidBrush(RGB(18, 18, 26));
+    FillRect(dc, &rc0, bg);
+    DeleteObject(bg);
+    if (!g_quickMenuFont)
+        g_quickMenuFont = CreateFontW(22, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+            DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
+    HGDIOBJ oldFont = SelectObject(dc, g_quickMenuFont);
+    SetBkMode(dc, TRANSPARENT);
+    // 标题
+    SetTextColor(dc, RGB(160, 160, 170));
+    TextOutW(dc, 14, 8, g_qmTitle, (int)wcslen(g_qmTitle));
+    // 分隔线
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(50, 50, 60));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    MoveToEx(dc, 14, 38, nullptr); LineTo(dc, w - 14, 38);
+    SelectObject(dc, oldPen); DeleteObject(pen);
+    // 菜单项
+    const int qmVis = g_qmCount < QM_VISIBLE_ITEMS ? g_qmCount : QM_VISIBLE_ITEMS;
+    for (int i = 0; i < qmVis; ++i) {
+        int y = 46 + i * 32;
+        // v1.2.1: 手柄光标高亮
+        if (i == g_qmCursor) {
+            RECT hl = { 14, y - 2, w - 14, y + 30 };
+            HBRUSH hb = CreateSolidBrush(RGB(40, 50, 70));
+            FillRect(dc, &hl, hb);
+            DeleteObject(hb);
+        }
+        wchar_t name[64];
+        MultiByteToWideChar(CP_UTF8, 0, g_qmItems[i].name, -1, name, 64);
+        SetTextColor(dc, RGB(230, 230, 230));
+        TextOutW(dc, 18, y, name, (int)wcslen(name));  // v1.1.4: 去序号后左移
+        bool on = g_qmItems[i].isOn ? g_qmItems[i].isOn() : false;
+        // v1.2.3: 开关显示改为滑块（轨道+旋钮，与主面板一致），替代文字 [开]/[关]
+        const int trackW = 44, trackH = 20;
+        const int trackX = w - 14 - trackW;
+        const int trackY = y + (32 - trackH) / 2;
+        RECT track = { trackX, trackY, trackX + trackW, trackY + trackH };
+        HPEN oldPen0 = (HPEN)SelectObject(dc, GetStockObject(NULL_PEN));
+        HBRUSH trackBg = CreateSolidBrush(on ? RGB(104, 150, 88) : RGB(52, 56, 62));
+        HBRUSH oldBr = (HBRUSH)SelectObject(dc, trackBg);
+        RoundRect(dc, track.left, track.top, track.right, track.bottom, trackH, trackH);
+        SelectObject(dc, oldBr); DeleteObject(trackBg);
+        // 旋钮：开=靠右（白色），关=靠左（浅灰）
+        const int knobD = 16;
+        const int knobY = trackY + (trackH - knobD) / 2;
+        int knobX = on ? (track.right - knobD - 2) : (track.left + 2);
+        HBRUSH knobBg = CreateSolidBrush(on ? RGB(245, 245, 240) : RGB(150, 154, 160));
+        SelectObject(dc, knobBg);
+        Ellipse(dc, knobX, knobY, knobX + knobD, knobY + knobD);
+        SelectObject(dc, oldBr); DeleteObject(knobBg);
+        SelectObject(dc, oldPen0);
+    }
+    SelectObject(dc, oldFont);
+}
+// 离屏缓冲渲染 + UpdateLayeredWindow 一次性提交（取代 BeginPaint 直绘）
+static void QmRedraw() {
+    if (!g_quickMenu) return;
+    RECT rc; GetClientRect(g_quickMenu, &rc);
+    int w = rc.right, h = rc.bottom;
+    QmEnsureBuffer(w, h);
+    if (!g_qmMemDC) return;
+    QmRender(g_qmMemDC, w, h);
+    POINT ptSrc = { 0, 0 };
+    SIZE  size  = { w, h };
+    // v1.2.26【F2 完全看不见的根因】AlphaFormat 必须为 0（用常量 alpha），
+    //   不能用 AC_SRC_ALPHA：GDI 往 32bpp BI_RGB DIB 上画不会写 alpha 字节
+    //   （CreateDIBSection 初始全 0，GDI 也不维护），per-pixel 模式下整窗
+    //   alpha=0 → 窗口已创建、日志有 "quick menu shown"，但屏幕上完全透明。
+    //   SourceConstantAlpha=220 让整窗半透明，不再依赖 DIB 的 alpha 通道。
+    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 220, 0 };
+    UpdateLayeredWindow(g_quickMenu, nullptr, nullptr, &size,
+                        g_qmMemDC, &ptSrc, 0, &blend, ULW_ALPHA);
+}
+
 static LRESULT CALLBACK QmWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_ERASEBKGND) return 1;
     if (msg == WM_LBUTTONDOWN) {
@@ -3245,67 +3651,16 @@ static LRESULT CALLBACK QmWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         return 0;
     }
     if (msg == WM_PAINT) {
+        // v1.2.7：仅 BeginPaint/EndPaint 校验绘制区；实际绘制走 QmRedraw →
+        //   UpdateLayeredWindow 一次性提交离屏 DIB（消除分层窗口 GDI 直绘闪烁）。
         PAINTSTRUCT ps;
-        HDC dc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        HBRUSH bg = CreateSolidBrush(RGB(18, 18, 26));
-        FillRect(dc, &rc, bg);
-        DeleteObject(bg);
-        if (!g_quickMenuFont)
-            g_quickMenuFont = CreateFontW(22, 0, 0, 0, FW_NORMAL, 0, 0, 0,
-                DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
-        HGDIOBJ oldFont = SelectObject(dc, g_quickMenuFont);
-        SetBkMode(dc, TRANSPARENT);
-        // 标题
-        SetTextColor(dc, RGB(160, 160, 170));
-        TextOutW(dc, 14, 8, g_qmTitle, (int)wcslen(g_qmTitle));
-        // 分隔线
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(50, 50, 60));
-        HGDIOBJ oldPen = SelectObject(dc, pen);
-        MoveToEx(dc, 14, 38, nullptr); LineTo(dc, rc.right - 14, 38);
-        SelectObject(dc, oldPen); DeleteObject(pen);
-        // 菜单项
-        const int qmVis = g_qmCount < QM_VISIBLE_ITEMS ? g_qmCount : QM_VISIBLE_ITEMS;
-        for (int i = 0; i < qmVis; ++i) {
-            int y = 46 + i * 32;
-            // v1.2.1: 手柄光标高亮
-            if (i == g_qmCursor) {
-                RECT hl = { 14, y - 2, rc.right - 14, y + 30 };
-                HBRUSH hb = CreateSolidBrush(RGB(40, 50, 70));
-                FillRect(dc, &hl, hb);
-                DeleteObject(hb);
-            }
-            // v1.1.4: 去掉快捷键标签，只显示名称和开关
-            wchar_t name[64];
-            MultiByteToWideChar(CP_UTF8, 0, g_qmItems[i].name, -1, name, 64);
-            SetTextColor(dc, RGB(230, 230, 230));
-            TextOutW(dc, 18, y, name, (int)wcslen(name));  // v1.1.4: 去序号后左移
-            bool on = g_qmItems[i].isOn ? g_qmItems[i].isOn() : false;
-            // v1.2.3: 开关显示改为滑块（轨道+旋钮，与主面板一致），替代文字 [开]/[关]
-            const int trackW = 44, trackH = 20;
-            const int trackX = rc.right - 14 - trackW;
-            const int trackY = y + (32 - trackH) / 2;
-            RECT track = { trackX, trackY, trackX + trackW, trackY + trackH };
-            HPEN oldPen0 = (HPEN)SelectObject(dc, GetStockObject(NULL_PEN));
-            HBRUSH trackBg = CreateSolidBrush(on ? RGB(104, 150, 88) : RGB(52, 56, 62));
-            HBRUSH oldBr = (HBRUSH)SelectObject(dc, trackBg);
-            RoundRect(dc, track.left, track.top, track.right, track.bottom, trackH, trackH);
-            SelectObject(dc, oldBr); DeleteObject(trackBg);
-            // 旋钮：开=靠右（白色），关=靠左（浅灰）
-            const int knobD = 16;
-            const int knobY = trackY + (trackH - knobD) / 2;
-            int knobX = on ? (track.right - knobD - 2) : (track.left + 2);
-            HBRUSH knobBg = CreateSolidBrush(on ? RGB(245, 245, 240) : RGB(150, 154, 160));
-            SelectObject(dc, knobBg);
-            Ellipse(dc, knobX, knobY, knobX + knobD, knobY + knobD);
-            SelectObject(dc, oldBr); DeleteObject(knobBg);
-            SelectObject(dc, oldPen0);
-        }
-        SelectObject(dc, oldFont);
+        BeginPaint(hwnd, &ps);
         EndPaint(hwnd, &ps);
+        QmRedraw();
         return 0;
     }
     if (msg == WM_DESTROY) {
+        QmFreeBuffer();
         g_quickMenu = nullptr;
         g_quickMenuVisible = false;
         return 0;
@@ -3362,8 +3717,11 @@ static void QmShow() {
     int h = 46 + qmVis * 32 + 14;
     if (h < 90) h = 90;
     int w = QmCalcWidth();
-    int sx = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
-    int sy = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
+    // v1.2.27【KB-113】原来按「整块屏幕」居中，窗口化/4K DPI 下菜单会偏到
+    //   游戏窗口右下并飞出右缘（2026-11-06 实测矩形 [1740,906,2099,1254]，
+    //   客户区右缘 1999，重叠率仅 0.721）。改为按游戏客户区居中。
+    int sx = 0, sy = 0;
+    QolAnchorToClient(0, 0, w, h, &sx, &sy, true);
     if (!g_quickMenu) {
         WNDCLASSW wc = {};
         wc.lpfnWndProc = QmWndProc;
@@ -3378,13 +3736,16 @@ static void QmShow() {
             g_qmClass, L"", WS_POPUP,
             sx, sy, w, h, nullptr, nullptr, g_module, nullptr);
         if (!g_quickMenu) { Log("[ModManager] quick menu create failed\n"); return; }
-        SetLayeredWindowAttributes(g_quickMenu, RGB(0, 0, 0), 220, LWA_ALPHA);
+        // v1.2.26: 不再调 SetLayeredWindowAttributes——它会设 color-key 模式
+        //   （黑=透明）并与 UpdateLayeredWindow 争抢分层属性，导致忽隐忽现。
+        //   透明度统一由 QmRedraw 的 BLENDFUNCTION 常量 alpha 控制。
     }
     SetWindowPos(g_quickMenu, HWND_TOPMOST, sx, sy, w, h,
                  SWP_NOZORDER | SWP_SHOWWINDOW | SWP_NOACTIVATE);
     g_quickMenuVisible = true;
     memset(g_qmDigitPrev, 0, sizeof(g_qmDigitPrev));
     g_qmLastPaint = GetTickCount64();
+    QmRedraw();   // v1.2.26: 立即提交首帧，避免显示后等到下一次 WM_PAINT 才出内容（黑/透明空窗）
     Log("[ModManager] quick menu shown (%d items, %dx%d)\n", g_qmCount, w, h);
 }
 
@@ -3475,7 +3836,13 @@ static void PollQuickMenu() {
 
 static void PumpQuickMenu() {
     if (!g_quickMenu) return;
-    if (!QolGameInForeground()) { QolHudGuardVisibility(g_quickMenu); return; }  // v1.6: 失焦守卫兜底（alpha 渐隐）后 pump 静默
+    if (!QolGameInForeground()) {
+        // v1.2.26: 快捷菜单已改为 UpdateLayeredWindow 提交，QolHudGuardVisibility
+        //   依赖的 GetLayeredWindowAttributes 在该模式下读不到属性会 fail-open，
+        //   因此失焦隐藏必须在 pump 门控处自己做，否则菜单会飘在桌面上
+        if (g_quickMenuVisible) QmHide();
+        return;
+    }
     MSG msg = {};
     while (PeekMessageW(&msg, g_quickMenu, 0, 0, PM_REMOVE)) {
         TranslateMessage(&msg);
@@ -3546,8 +3913,67 @@ static void PumpPanel() {
 }
 
 // ============================================================
-// 申请重启：提示 + 自动关闭游戏
+// v1.2.19: 存档安全检测（修复"存档没了"——玩家反馈装 MOD 重启后存档槽消失）
+// 旧版缺陷：①只检测 save.001（玩家玩别的槽时游戏写该槽检测不到）
+//           ②不检测 save.lst（槽位索引！写一半=全部槽位丢失）和 .systemsave
+//           ③WM_CLOSE 后 Sleep(150) 就强杀——从未真正等游戏退出
+// 修复：检测存档目录内【全部】存档文件，任一被独占（正在写）即等待
 // ============================================================
+// 返回 true=所有存档文件当前未被占用（可以安全终止）
+static bool AllSaveFilesIdle() {
+    wchar_t roam[MAX_PATH] = {};
+    if (!SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, roam))
+        return true;  // 找不到目录：不阻塞（与旧行为一致）
+    std::wstring saveRoot = std::wstring(roam) +
+        L"\\Nippon Ichi Software, Inc\\Honogurashinoniwa";
+
+    // 枚举存档子目录（SteamID64），检测每个目录内的全部存档文件
+    WIN32_FIND_DATAW fd = {};
+    HANDLE hf = FindFirstFileW((saveRoot + L"\\*").c_str(), &fd);
+    if (hf == INVALID_HANDLE_VALUE) return true;
+    bool allIdle = true;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (fd.cFileName[0] == L'.') continue;
+        std::wstring dir = saveRoot + L"\\" + fd.cFileName;
+
+        // save.lst + .systemsave + save.001~save.030 全检
+        const wchar_t* names[] = { L"save.lst", L".systemsave" };
+        for (int k = 0; k < 2 && allIdle; ++k) {
+            std::wstring f = dir + L"\\" + names[k];
+            HANDLE h = CreateFileW(f.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                                   nullptr, OPEN_EXISTING,
+                                   FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h == INVALID_HANDLE_VALUE) {
+                if (GetLastError() == ERROR_SHARING_VIOLATION) {
+                    Log("[ModManager] save locked: %ls\n", names[k]);
+                    allIdle = false;
+                }
+            } else {
+                CloseHandle(h);
+            }
+        }
+        for (int slot = 1; slot <= 30 && allIdle; ++slot) {
+            wchar_t nm[16] = {};
+            _snwprintf_s(nm, 16, _TRUNCATE, L"save.%03d", slot);
+            std::wstring f = dir + L"\\" + nm;
+            HANDLE h = CreateFileW(f.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                                   nullptr, OPEN_EXISTING,
+                                   FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h == INVALID_HANDLE_VALUE) {
+                if (GetLastError() == ERROR_SHARING_VIOLATION) {
+                    Log("[ModManager] save locked: %ls\n", nm);
+                    allIdle = false;
+                }
+            } else {
+                CloseHandle(h);
+            }
+        }
+    } while (FindNextFileW(hf, &fd) && allIdle);
+    FindClose(hf);
+    return allIdle;
+}
+
 static void RequestRestart() {
     Log("[ModManager] restart requested\n");
     // 显示重启提示（短暂重绘）
@@ -3562,63 +3988,48 @@ static void RequestRestart() {
 
     // 找到游戏窗口，请求正常关闭（让其有机会保存）
     HWND wnd = FindGameWindow();
-    if (wnd) {
-        PostMessageW(wnd, WM_CLOSE, 0, 0);
-        Sleep(150);
-    }
 
-    // v1.1.2: TerminateProcess 前检测存档是否正在写入
-    // 通过尝试独占打开 save.001：能独占说明游戏没在写存档，可以安全终止
-    // 若独占失败（SHARING_VIOLATION）说明游戏正在写入存档，等待其完成
-    // 最多等待 5 秒，超时后强制终止（避免无限卡住）
-    {
-        wchar_t roam[MAX_PATH] = {};
-        std::wstring saveFile;
-        if (SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, roam)) {
-            std::wstring saveRoot = std::wstring(roam) +
-                L"\\Nippon Ichi Software, Inc\\Honogurashinoniwa";
-            WIN32_FIND_DATAW fd = {};
-            HANDLE hf = FindFirstFileW((saveRoot + L"\\*").c_str(), &fd);
-            if (hf != INVALID_HANDLE_VALUE) {
-                do {
-                    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY &&
-                        fd.cFileName[0] != L'.') {
-                        saveFile = saveRoot + L"\\" + fd.cFileName + L"\\save.001";
-                        break;
-                    }
-                } while (FindNextFileW(hf, &fd));
-                FindClose(hf);
-            }
-        }
+    // v1.2.19: 保存退出协议重写——
+    // ①WM_CLOSE 后【真正等待】游戏退出（最长 8s，每 200ms 查窗口/进程）
+    //   旧 Sleep(150) 假等待 = 游戏还没开始保存就被杀
+    // ②等待期间全部存档文件（save.lst/.systemsave/save.NNN）任一被独占
+    //   → 继续等（写入进行中）
+    // ③超时后才 TerminateProcess；强杀前最后一刻再全检一轮
+    if (wnd) PostMessageW(wnd, WM_CLOSE, 0, 0);
 
-        if (!saveFile.empty()) {
-            bool saveSafe = false;
-            for (int attempt = 0; attempt < 50; ++attempt) {  // 50 × 100ms = 5 秒
-                HANDLE h = CreateFileW(saveFile.c_str(),
-                    GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-                if (h != INVALID_HANDLE_VALUE) {
-                    CloseHandle(h);
-                    saveSafe = true;
-                    Log("[ModManager] save file available, safe to terminate (attempt %d)\n", attempt);
-                    break;
-                }
-                if (GetLastError() != ERROR_SHARING_VIOLATION) {
-                    // 文件不存在或其他错误，不阻塞终止
-                    saveSafe = true;
-                    Log("[ModManager] save check skipped (error %lu), proceeding\n", GetLastError());
-                    break;
-                }
-                Log("[ModManager] save file locked (writing), waiting... (attempt %d)\n", attempt);
+    bool safeToKill = false;
+    ULONGLONG startTs = GetTickCount64();
+    ULONGLONG lastLog = 0;
+    while (GetTickCount64() - startTs < 8000) {
+        Sleep(200);
+        // 游戏窗口还在 & 存档文件被占用 → 继续等
+        if (AllSaveFilesIdle()) {
+            // 存档静默：再给 500ms 缓冲（确保序列化收尾 flush 完成），
+            // 缓冲期内若再次出现占用则继续进入等待循环
+            ULONGLONG quietStart = GetTickCount64();
+            bool stillQuiet = true;
+            while (GetTickCount64() - quietStart < 500) {
                 Sleep(100);
+                if (!AllSaveFilesIdle()) { stillQuiet = false; break; }
             }
-            if (!saveSafe) {
-                Log("[ModManager] WARNING: save still locked after 5s, forcing terminate\n");
-            }
-        } else {
-            Log("[ModManager] no save file found, proceeding with terminate\n");
+            if (stillQuiet) { safeToKill = true; break; }
+            continue;  // 缓冲期又见写入：重等
+        }
+        ULONGLONG now = GetTickCount64();
+        if (now - lastLog > 1000) {
+            lastLog = now;
+            Log("[ModManager] waiting for save write to finish (%.1fs)\n",
+                (now - startTs) / 1000.0f);
         }
     }
+
+    if (!safeToKill) {
+        Log("[ModManager] WARNING: save still busy after 8s, last-check before force kill\n");
+        // 最后一刻复检：写入刚结束的窗口也能被抓住
+        for (int attempt = 0; attempt < 10 && !AllSaveFilesIdle(); ++attempt)
+            Sleep(200);
+    }
+    Log("[ModManager] restarting (safeToKill=%d)\n", safeToKill ? 1 : 0);
 
     // 兜底：直接结束进程（确保游戏退出）
     TerminateProcess(GetCurrentProcess(), 0);
@@ -3627,12 +4038,106 @@ static void RequestRestart() {
 // ============================================================
 // 插件入口
 // ============================================================
+
+// v1.2.20：游戏版本闸门 + 不适配 MOD 隔离
+//   MOD 目录里的 modinfo.txt 记录部署时的 exe 指纹（devkit deploy 自动写入）；
+//   指纹与当前 exe 不一致 → 该 MOD 不是给这一版游戏编的 → 移到 待用MOD\
+//   （游戏加载器只扫 mods\，移出即"不加载"）。没有清单的目录一律不动。
+// v1.2.22：常开单行日志（发布版整体日志关闭，但版本闸门必须留痕，
+//   否则玩家/开发者无法判断"MOD 为什么没加载"）
+static void ModGateLog(const char* text) {
+    if (g_gameDir.empty()) return;
+    wchar_t path[MAX_PATH] = {};
+    if (swprintf_s(path, L"%ls\\故障日志\\qol_modmanager.log",
+                   g_gameDir.c_str()) <= 0) return;
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"ab") != 0 || !f) return;
+    SYSTEMTIME st = {};
+    GetLocalTime(&st);
+    fprintf(f, "[%02d:%02d:%02d] %s\n", st.wHour, st.wMinute, st.wSecond,
+            text);
+    fclose(f);
+}
+
+static bool ReadModInfoGameTag(const std::wstring& dir,
+                               unsigned long long* tagOut) {
+    std::wstring path = dir + L"\\modinfo.txt";
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"rb") != 0 || !f) return false;
+    char buf[1024] = {};
+    const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    const char* p = strstr(buf, "game_tag=");
+    if (!p) return false;
+    unsigned long long v = 0;
+    if (sscanf_s(p + 9, "%llx", &v) != 1) return false;
+    *tagOut = v;
+    return true;
+}
+
+static void PruneIncompatibleMods() {
+    const qol::ExeFingerprint& fp = qol::ExeFingerprintOfSelf();
+    if (!fp.valid) {
+        Log("[ModManager] 版本闸门: exe 指纹读取失败，跳过隔离\n");
+        return;
+    }
+    const std::wstring pattern = g_modsDir + L"\\*";
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        Log("[ModManager] 版本闸门: mods 目录不可读\n");
+        return;
+    }
+    int moved = 0, kept = 0, unknown = 0, failed = 0;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (fd.cFileName[0] == L'.') continue;
+        const std::wstring folder = fd.cFileName;
+        // 自身（ModManager）不隔离：否则下次启动就没有管理器了
+        if (folder.rfind(L"ModManager_", 0) == 0) continue;
+
+        const std::wstring src = g_modsDir + L"\\" + folder;
+        unsigned long long tag = 0;
+        if (!ReadModInfoGameTag(src, &tag)) {
+            ++unknown;
+            continue;   // 无清单（旧部署）→ 不动，交给 MOD 自身闸门
+        }
+        if (tag == fp.tag) {
+            ++kept;
+            continue;
+        }
+        const std::wstring dst = g_storageDir + L"\\" + folder;
+        if (MoveFileExW(src.c_str(), dst.c_str(),
+                        MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING)) {
+            ++moved;
+            Log("[ModManager] 版本不匹配已停用: %ls（mod_tag=%016llX cur=%016llX）\n",
+                folder.c_str(), tag, fp.tag);
+        } else {
+            ++failed;
+            Log("[ModManager] 版本不匹配但移出失败(err=%lu): %ls"
+                "（该 MOD 自身闸门会拒绝初始化）\n",
+                GetLastError(), folder.c_str());
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    Log("[ModManager] 版本闸门: 停用 %d / 适配 %d / 无清单 %d / 失败 %d\n",
+        moved, kept, unknown, failed);
+    {
+        char line[192] = {};
+        _snprintf_s(line, sizeof(line), _TRUNCATE,
+                    "版本闸门: 停用 %d / 适配 %d / 无清单 %d / 失败 %d",
+                    moved, kept, unknown, failed);
+        ModGateLog(line);
+    }
+}
+
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("modmanager");
-    Log("[ModManager] mod_init — v1.2.5 build 25311578 v1.20\n");
-
-    // 初始化手柄输入（三路混合：XInput 线程 + HID 直读线程 + joyGetPosEx 回退）
-    InitGamepad();
+    qol::obs::Init(nullptr);  // v1.6.x: 统一观测层接入
+    qol::obs::SetInt("modmanager", "ready", 1);
+    qol::obs::EventF(1, 2500, L"[ModManager] 已加载：观测层接入");
+    Log("[ModManager] mod_init — v1.2.26 build 25640656 v1.30\n");
 
     g_gameDir    = GetGameDir();
     g_modsDir    = g_gameDir + L"\\Mods";
@@ -3641,10 +4146,30 @@ extern "C" __declspec(dllexport) void mod_init(void) {
     g_hotkeyCachePath = g_gameDir + L"\\modmanager_hotkey_cache.txt";
     Log("[ModManager] gameDir=%ls\n", g_gameDir.c_str());
 
+    // 先做文件级隔离（纯文件操作，任何版本都安全），再判断自身能否启动
+    PruneIncompatibleMods();
+    if (!qol::ExeBuildSupported()) {
+        Log("[ModManager] 游戏版本不匹配（非 v1.20 build 25311578）→"
+            " 管理面板不启动（不适配 MOD 已尽可能移出 mods\\）\n");
+        ModGateLog("自身闸门: 游戏版本不匹配 → 管理面板不启动");
+        return;
+    }
+    ModGateLog("自身闸门: 版本匹配 → 管理面板启动");
+
+    // 初始化手柄输入（三路混合：XInput 线程 + HID 直读线程 + joyGetPosEx 回退）
+    InitGamepad();
+
     if (GetFileAttributesW(g_storageDir.c_str()) == INVALID_FILE_ATTRIBUTES)
         CreateDirectoryW(g_storageDir.c_str(), nullptr);
     if (GetFileAttributesW(g_abandonDir.c_str()) == INVALID_FILE_ATTRIBUTES)
         CreateDirectoryW(g_abandonDir.c_str(), nullptr);
+
+    // 构建运行时注册表：模板 + 表外外部 MOD（适配性升级 2026-10-24）
+    g_mods.assign(g_modTemplates, g_modTemplates + g_modTemplateCount);
+    DiscoverExternalMods();
+    g_modCount = (int)g_mods.size();
+    Log("[ModManager] registry: %d templates + %d external = %d\n",
+        g_modTemplateCount, g_modCount - g_modTemplateCount, g_modCount);
 
     ScanModFolders();
     CleanupStaleFolders();
@@ -3668,9 +4193,10 @@ extern "C" __declspec(dllexport) void mod_tick(void) {
     }
     PollHotkey();
     PollQuickMenu();
-    // 手柄改键录制轮询（面板可见且正在录制时）
+    // 改键录制轮询（面板可见且正在录制时）
     if (g_panelVisible && g_recModIdx >= 0) {
         PollGamepadForRecording();
+        PollKeyboardForRecording();
     }
     // 手柄面板导航轮询（面板可见时）
     if (g_panelVisible) {
@@ -3703,6 +4229,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_module = hModule;
         DisableThreadLibraryCalls(hModule);
+    }
+    else if (reason == DLL_PROCESS_DETACH) {
+        qol::obs::Shutdown();  // v1.6.x: 解观测层映射（仅本 DLL 视图）
     }
     return TRUE;
 }

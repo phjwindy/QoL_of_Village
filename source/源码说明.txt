@@ -1,0 +1,21 @@
+﻿QoL Mod Pack v1.30_releasev2 — 源码说明
+============================================================
+生成日期：2026-11-12
+
+范围
+  · 17 个随包 MOD 的源码
+  · ProductionAuto（当前 v1.6.63 源码，仅源码、无二进制）
+  · DebugHUD（已退役，仅存档）
+  · QoL_Shared 共享框架
+
+约定
+  · 所有文件从开发仓 QoL_DevKit 逐字节复制，未做任何混淆、脱敏或改写
+  · 不含 AIGC 标识块、不含 AI 生成水印行
+  · 不含构建产物（*.dll / *.obj / *.pdb 等）、不含 *.md 说明文档、不含备份文件
+  · ProductionAuto v1.6.63 为未验收实验版，含诊断日志与 UI_NATIVE_ONLY /
+    UI_PIGGYBACK 两个 A/B 热开关；其二进制不在发布包 MODS 内
+
+校验
+  逐文件 SHA-256 见 MANIFEST_v1.30_releasev2.json
+
+作者：PHJ&消失的清风，转载或分享时请注明出处。

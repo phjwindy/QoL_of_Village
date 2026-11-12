@@ -1,4 +1,4 @@
-// sower.cpp —— 范围播种 (1x1 / 3x3 / 5x5) (v1.3.41：连通档下线（用户拍板）——v1.20 连通 Flood-Fill 实测 filled=0 不工作；v1.3.36：每帧最多结算 1 格限速防播种风暴；v1.3.35-diag 计时确认额外格 28us/格)
+// sower.cpp —— 范围播种 (1x1 / 3x3 / 5x5) (v1.3.42：连通档下线（用户拍板）——v1.20 连通 Flood-Fill 实测 filled=0 不工作；v1.3.36：每帧最多结算 1 格限速防播种风暴；v1.3.35-diag 计时确认额外格 28us/格)
 //
 // v1.3.10: detour 入口限频诊断日志（区分调用链断裂 vs 结构漂移）——
 //   实测 v1.20：detour 被调用（调用链完好），但 next=0xFFFFFFFF、count=0
@@ -16,7 +16,7 @@
 // v1.3.25-diag: mapInfo 偏移热参数化（MANAGER_MAPINFO_OFFSET 默认 0x310）+
 //          manager/mapInfo 诊断 dump（validateLand 失败时打印 mapInfo+[mI+0x30]+
 //          manager+0x300~0x340 窗口），定位 v1.20 manager 结构 0x310 偏移是否漂移。
-//          根因分析：AOB 确认 RVA_SOW_VALIDATE_LAND=0x1E1310 正确（全 exe 唯一命中），
+//          根因分析：AOB 确认 RVA_SOW_VALIDATE_LAND = 0x1e43e0 正确（全 exe 唯一命中），
 //          函数体从 [mapInfo+0x30]→[+0x560] 解引用；若 0x310 漂移→mapInfo 无效→SEH→false。
 // v1.3.16: H10——7 个原生函数调用加 SEH 保护（stateManagerLookup / sowValidateLand /
 //          sowValidateState / sowSeedItemLookup / sowSeedItemCheck / sowWorldToKey /
@@ -30,7 +30,7 @@
 //         修复：四邻域改屏幕格子偏移 + 基向量变换（与 3x3/5x5 同坐标系）。
 // v1.3.1: 续播队列 state 指针添加 IsReadable 防悬空检查。
 //
-// 切换键：键盘 5 或 手柄 D-pad Left  循环 1x1(原生) -> 3x3 -> 5x5 -> 1x1（v1.3.41 连通档下线）
+// 切换键：键盘 5 或 手柄 D-pad Left  循环 1x1(原生) -> 3x3 -> 5x5 -> 1x1（v1.3.42 连通档下线）
 // 原则：只使用背包中当前选中的种子，播完即停。
 //
 // 核心策略（源自 BigL233 dinput8.cpp 3272-5944 行，适配 v1.20 build 25311578）：
@@ -48,6 +48,7 @@
 //   - 任何异常立即 fail-closed，不继续操作
 
 #include <windows.h>
+#include "obs.h"              // v1.6.x: 统一观测层（AI 可读寄存器 + toast）
 #include <cmath>
 #include <cstring>
 #include <cstdio>
@@ -64,6 +65,7 @@
 #pragma comment(lib, "hid.lib")
 
 #include "logging.h"
+#include "exe_guard.h"   // v-local: 统一游戏版本闸门
 #include "budget.h"        // v1.3.19: P0 帧预算/耗时探针（跨 DLL 共享）
 
 static int s_sowerBudgetSlot = -1;  // v1.3.19: P0 探针槽位
@@ -71,22 +73,17 @@ static int s_sowerBudgetSlot = -1;  // v1.3.19: P0 探针槽位
 #include "hotkey.h"
 #include "game_window.h"   // HUD owner 绑定游戏窗口
 #include "patch_safety.h"
+#include "quickmenu.h"     // F2 统一菜单接入（P0）
 
 // 日志开关：发布版禁用日志输出（不生成 qol_sower.log）
 // 调试时取消注释下行即可开启日志，无需改其他代码
-// v1.3.41 转正：日志关闭（qol_sower.log 不再生成）
-// #define SOWER_LOGGING
-#ifdef SOWER_LOGGING
-#else
-  #define LogOpen(x)  ((void)0)
-  #define Log(...)    ((void)0)
-  #define LogV(...)   ((void)0)
-  #define LogClose()  ((void)0)
-#endif
+// v1.3.42 转正：日志关闭（qol_sower.log 不再生成）
+// 日志运行时开关（2026-10-24）：编译期宏 SOWER_LOGGING 退役，改由 QoL_Shared 运行时门控。
+// 开启方式：游戏根 qol_log.cfg 写 level=1（约 1s 生效，免重编免重启）；缺省/level=0 为静默。
 
 // [diag] 诊断日志门控（默认关）；调试时 #define DIAG_SOWER 1 开启
 #ifndef DIAG_SOWER
-#define DIAG_SOWER 0      // v1.3.41 转正：诊断日志关闭（定位时改 1 重编）
+#define DIAG_SOWER 0      // v1.3.42 转正：诊断日志关闭（定位时改 1 重编）
 #endif
 
 // ============================================================
@@ -94,19 +91,19 @@ static int s_sowerBudgetSlot = -1;  // v1.3.19: P0 探针槽位
 // ============================================================
 
 // ---- RVA 地址 ----
-static volatile uintptr_t RVA_SOWING_UPDATE             = 0x24ACE0;
-static volatile uintptr_t RVA_SOWING_PHASE0_UPDATE      = 0x24ACA0;
-static volatile uintptr_t RVA_STATE_MANAGER_LOOKUP      = 0x1CA5D0;
-static volatile uintptr_t RVA_SOW_SELECT_TARGET         = 0x212020;
-static volatile uintptr_t RVA_SOW_VALIDATE_LAND         = 0x1E1310;
-static volatile uintptr_t RVA_SOW_REFRESH_LAND          = 0x212110;
-static volatile uintptr_t RVA_SOW_VALIDATE_STATE        = 0x24B0B0;
-static volatile uintptr_t RVA_SOW_SETTLE                = 0x24B460;
-static volatile uintptr_t RVA_SOW_SEED_ITEM_LOOKUP      = 0x17C840;
-static volatile uintptr_t RVA_SOW_SEED_ITEM_CHECK       = 0x75F630;
-static volatile uintptr_t RVA_GAME_SINGLETON_PTR        = 0x10FCBB0;
-static volatile uintptr_t RVA_SOW_WORLD_TO_KEY          = 0x16D460;
-static volatile uintptr_t RVA_SOW_KEY_TO_WORLD          = 0x16D540;
+static volatile uintptr_t RVA_SOWING_UPDATE = 0x253490;
+static volatile uintptr_t RVA_SOWING_PHASE0_UPDATE      = 0x253450;
+static volatile uintptr_t RVA_STATE_MANAGER_LOOKUP = 0x1cd6a0;
+static volatile uintptr_t RVA_SOW_SELECT_TARGET = 0x215150;
+static volatile uintptr_t RVA_SOW_VALIDATE_LAND = 0x1e43e0;
+static volatile uintptr_t RVA_SOW_REFRESH_LAND = 0x215240;
+static volatile uintptr_t RVA_SOW_VALIDATE_STATE = 0x253860;
+static volatile uintptr_t RVA_SOW_SETTLE = 0x253c10;
+static volatile uintptr_t RVA_SOW_SEED_ITEM_LOOKUP = 0x17f8a0;
+static volatile uintptr_t RVA_SOW_SEED_ITEM_CHECK = 0x7768d0;
+static volatile uintptr_t RVA_GAME_SINGLETON_PTR = 0x111cc90;
+static volatile uintptr_t RVA_SOW_WORLD_TO_KEY          = 0x170470;
+static volatile uintptr_t RVA_SOW_KEY_TO_WORLD          = 0x170550;
 
 // ---- 结构体偏移 ----
 static volatile uintptr_t SAVE_DATA_POINTER_OFFSET           = 0x208;
@@ -230,7 +227,7 @@ namespace G {
     uintptr_t base = 0;
     bool ready = false;
 
-    std::atomic<int> rangeSowingMode{0};       // 0=1x1, 1=3x3, 2=5x5（v1.3.41 连通档 3 下线，Flood-Fill 代码保留不可达）
+    std::atomic<int> rangeSowingMode{0};       // 0=1x1, 1=3x3, 2=5x5（v1.3.42 连通档 3 下线，Flood-Fill 代码保留不可达）
     bool rangeSowingReady = false;
     bool rangeSowingNativeBatchReady = false;
 
@@ -2079,9 +2076,9 @@ static const unsigned char EXPECTED_UPDATE_PROLOGUE[SOWING_HOOK_LENGTH] = {
 
 // 关键函数头部签名（轻量验证）
 static const unsigned char EXPECTED_STATE_LOOKUP[12] = {
-    0x40, 0x53, 0x48, 0x83, 0xEC, 0x20,
-    0x48, 0x8B, 0xD9, 0xE8, 0x42, 0x43
-};
+        0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B,
+        0xD9, 0xE8, 0x52, 0x43,
+    };
 static const unsigned char EXPECTED_SELECT_TARGET[17] = {
     0x48, 0x89, 0x5C, 0x24, 0x18,
     0x55, 0x56, 0x57,
@@ -2095,17 +2092,15 @@ static const unsigned char EXPECTED_VALIDATE_LAND[24] = {
     0x48, 0x8D, 0xAC, 0x24, 0xF0, 0xFD, 0xFF, 0xFF
 };
 static const unsigned char EXPECTED_REFRESH_LAND[32] = {
-    0x48, 0x83, 0xEC, 0x28,
-    0x4C, 0x8B, 0xC9,
-    0x48, 0x8B, 0x05, 0x92, 0xAA, 0xEE, 0x00,
-    0x48, 0x8B, 0x90, 0x08, 0x02, 0x00, 0x00,
-    0x48, 0x63, 0x82, 0xB0, 0x33, 0x00, 0x00,
-    0x4C, 0x8B, 0x84, 0xC2
-};
+        0x48, 0x83, 0xEC, 0x28, 0x4C, 0x8B, 0xC9, 0x48,
+        0x8B, 0x05, 0x42, 0x7A, 0xF0, 0x00, 0x48, 0x8B,
+        0x90, 0x08, 0x02, 0x00, 0x00, 0x48, 0x63, 0x82,
+        0xB0, 0x33, 0x00, 0x00, 0x4C, 0x8B, 0x84, 0xC2,
+    };
 static const unsigned char EXPECTED_SEED_ITEM_LOOKUP[14] = {
-    0x40, 0x53, 0x48, 0x83, 0xEC, 0x20,
-    0x48, 0x8B, 0xD9, 0xE8, 0x02, 0x69, 0x5E, 0x00
-};
+        0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B,
+        0xD9, 0xE8, 0x42, 0xAB, 0x5F, 0x00,
+    };
 static const unsigned char EXPECTED_SEED_ITEM_CHECK[24] = {
     0x40, 0x53, 0x48, 0x83, 0xEC, 0x20,
     0x48, 0x8B, 0x41, 0x08, 0x0F, 0xB6, 0xDA,
@@ -2357,16 +2352,42 @@ static bool InitHud() {
 
 static void UpdateHudPosition() {
     if (!g_hudWindow) return;
-    MONITORINFO mi = {};
-    mi.cbSize = sizeof(mi);
-    HMONITOR mon = MonitorFromWindow(QolFindGameWindow(), MONITOR_DEFAULTTOPRIMARY);
-    if (!GetMonitorInfoW(mon, &mi)) {
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
-    }
+    // v1.3.45（2026-11-01）【定位修复·KB-113】原来用「屏幕工作区」左上角 +24 定位，
+    //   窗口化游玩时游戏窗口并不在 (0,0)（本机实测窗口 rect=[150,10,1444,768]），
+    //   于是 HUD 被画到游戏窗口**外面的桌面**上 —— 日志明明写着 HUD ready / shown，
+    //   玩家却完全看不到。改为锚定游戏窗口客户区左上角，并钳制在客户区内。
     const int width = 180;
     const int height = 62;
-    const int x = mi.rcWork.left + 24;
-    const int y = mi.rcWork.top + 24;
+    int x = 24;
+    int y = 24;
+    bool anchored = false;
+    {
+        HWND gameWnd = QolFindGameWindow();
+        RECT gr = {};
+        POINT gpt = { 0, 0 };
+        if (gameWnd && GetClientRect(gameWnd, &gr) &&
+            ClientToScreen(gameWnd, &gpt)) {
+            const int cw = gr.right - gr.left;
+            const int ch = gr.bottom - gr.top;
+            if (cw > 0 && ch > 0) {
+                x = gpt.x + 24;
+                // 纵向槽位：多 HUD 同时显示时按固定槽位排开，避免互相遮挡
+                //   AutoFish 24 / EyeFix 140 / Sower 210（客户区左上角起）
+                y = gpt.y + 210;
+                if (x + width + 24 > gpt.x + cw) x = gpt.x + cw - width - 24;
+                if (y + height + 24 > gpt.y + ch) y = gpt.y + ch - height - 24;
+                if (x < gpt.x + 8) x = gpt.x + 8;
+                if (y < gpt.y + 8) y = gpt.y + 8;
+                anchored = true;
+            }
+        }
+    }
+    if (!anchored) {
+        RECT wa = {};
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+        x = wa.left + 24;
+        y = wa.top + 210;
+    }
     SetWindowPos(g_hudWindow, HWND_TOPMOST, x, y, width, height,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
@@ -2428,7 +2449,7 @@ static void PollModeSwitch() {
 
     if (pressed && G::rangeSowingReady) {
         int oldMode = G::rangeSowingMode.load(std::memory_order_relaxed);
-        int newMode = (oldMode + 1) % 3;  // 0(1x1) -> 1(3x3) -> 2(5x5) -> 0（v1.3.41 连通档 3 下线：v1.20 连通 Flood-Fill 实测 filled=0 不工作）
+        int newMode = (oldMode + 1) % 3;  // 0(1x1) -> 1(3x3) -> 2(5x5) -> 0（v1.3.42 连通档 3 下线：v1.20 连通 Flood-Fill 实测 filled=0 不工作）
         G::rangeSowingMode.store(newMode, std::memory_order_relaxed);
         Log("[Sower] 模式切换: %s -> %s", ModeName(oldMode), ModeName(newMode));
         RefreshHud(newMode);
@@ -2436,24 +2457,68 @@ static void PollModeSwitch() {
 }
 
 // ============================================================
+// QoL 快捷菜单导出（宿主：ModManager F2 / F1）
+//   数字5「范围播种」开关，复用 rangeSowingMode 循环（与热键同义）
+// ============================================================
+static bool IsSowerOn() {
+    return G::rangeSowingMode.load() != 0;
+}
+static void CycleSowerMode() {
+    if (!G::rangeSowingReady) return;
+    int oldMode = G::rangeSowingMode.load(std::memory_order_relaxed);
+    int newMode = (oldMode + 1) % 3;  // 0(1x1)->1(3x3)->2(5x5)->0
+    G::rangeSowingMode.store(newMode, std::memory_order_relaxed);
+    Log("[Sower] 模式切换: %s -> %s (quickmenu)", ModeName(oldMode), ModeName(newMode));
+    RefreshHud(newMode);
+}
+// v1.3.43【F2 菜单语义修正】原 label 写死"范围播种"，isOn() 报 on/off 而 toggle()
+//   实际循环 1x1→3x3→5x5 —— 用户看到的是"假二态开关"，分不清当前档位。
+//   修正：QolQuickMenuItems 在菜单每次打开时(被实时调用)把当前模式写进标签，
+//   isOn() 仍表示"范围模式已启用(mode!=0)"、toggle() 循环不变；绿色开关=范围激活，
+//   标签=当前档位，语义一致、无歧义。
+static char s_qmRangeLabel[32];
+extern "C" __declspec(dllexport) int QolQuickMenuItems(
+        QolQuickMenuItem* items, int maxItems) {
+    // v1.3.44（2026-11-01 用户要求）：F2 菜单项标签固定为「范围播种」，不再带档位后缀。
+    //   原因：截图里"范围播种 1x1"配上右侧开关，看起来像"1x1 是一个独立功能"，
+    //   而实际它是三档循环（1x1→3x3→5x5）。档位信息改由 Sower 自己的 HUD 与日志体现，
+    //   菜单只表达"该功能开/关"这一件事。
+    const char* label = "范围播种";
+    for (int i = 0; label[i] && i < 31; ++i) s_qmRangeLabel[i] = label[i];
+    s_qmRangeLabel[31] = 0;
+    int n = 1;  // 范围播种
+    if (items && maxItems >= 1)
+        items[0] = { s_qmRangeLabel, IsSowerOn, CycleSowerMode };
+    return n;
+}
+
+// ============================================================
 // 插件入口
 // ============================================================
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("sower");
+    qol::obs::Init(nullptr);  // v1.6.x: 统一观测层接入
+    qol::obs::SetInt("sower", "ready", 1);
+    qol::obs::EventF(1, 2500, L"[Sower] 已加载：观测层接入");
+    // v-local：游戏版本闸门（village.exe 非 v1.20 build 25311578 则不启用）
+    if (!qol::ExeBuildSupported()) {
+        Log("[Sower] 游戏版本不匹配（非 v1.20 build 25311578）→ 本 MOD 不启用\n");
+        return;
+    }
     Log("[Sower] mod_init 开始");
-    HotConfig_Register("sower", (void*)&RVA_SOWING_UPDATE, "RVA_SOWING_UPDATE", HOT_RVA, 0x24ACE0);
-    HotConfig_Register("sower", (void*)&RVA_SOWING_PHASE0_UPDATE, "RVA_SOWING_PHASE0_UPDATE", HOT_RVA, 0x24ACA0);
-    HotConfig_Register("sower", (void*)&RVA_STATE_MANAGER_LOOKUP, "RVA_STATE_MANAGER_LOOKUP", HOT_RVA, 0x1CA5D0);
-    HotConfig_Register("sower", (void*)&RVA_SOW_SELECT_TARGET, "RVA_SOW_SELECT_TARGET", HOT_RVA, 0x212020);
-    HotConfig_Register("sower", (void*)&RVA_SOW_VALIDATE_LAND, "RVA_SOW_VALIDATE_LAND", HOT_RVA, 0x1E1310);
-    HotConfig_Register("sower", (void*)&RVA_SOW_REFRESH_LAND, "RVA_SOW_REFRESH_LAND", HOT_RVA, 0x212110);
-    HotConfig_Register("sower", (void*)&RVA_SOW_VALIDATE_STATE, "RVA_SOW_VALIDATE_STATE", HOT_RVA, 0x24B0B0);
-    HotConfig_Register("sower", (void*)&RVA_SOW_SETTLE, "RVA_SOW_SETTLE", HOT_RVA, 0x24B460);
-    HotConfig_Register("sower", (void*)&RVA_SOW_SEED_ITEM_LOOKUP, "RVA_SOW_SEED_ITEM_LOOKUP", HOT_RVA, 0x17C840);
-    HotConfig_Register("sower", (void*)&RVA_SOW_SEED_ITEM_CHECK, "RVA_SOW_SEED_ITEM_CHECK", HOT_RVA, 0x75F630);
-    HotConfig_Register("sower", (void*)&RVA_GAME_SINGLETON_PTR, "RVA_GAME_SINGLETON_PTR", HOT_RVA, 0x10FCBB0);
-    HotConfig_Register("sower", (void*)&RVA_SOW_WORLD_TO_KEY, "RVA_SOW_WORLD_TO_KEY", HOT_RVA, 0x16D460);
-    HotConfig_Register("sower", (void*)&RVA_SOW_KEY_TO_WORLD, "RVA_SOW_KEY_TO_WORLD", HOT_RVA, 0x16D540);
+    HotConfig_Register("sower", (void*)&RVA_SOWING_UPDATE, "RVA_SOWING_UPDATE", HOT_RVA, 0x253490);
+    HotConfig_Register("sower", (void*)&RVA_SOWING_PHASE0_UPDATE, "RVA_SOWING_PHASE0_UPDATE", HOT_RVA, 0x253450);
+    HotConfig_Register("sower", (void*)&RVA_STATE_MANAGER_LOOKUP, "RVA_STATE_MANAGER_LOOKUP", HOT_RVA, 0x1cd6a0);
+    HotConfig_Register("sower", (void*)&RVA_SOW_SELECT_TARGET, "RVA_SOW_SELECT_TARGET", HOT_RVA, 0x215150);
+    HotConfig_Register("sower", (void*)&RVA_SOW_VALIDATE_LAND, "RVA_SOW_VALIDATE_LAND", HOT_RVA, 0x1e43e0);
+    HotConfig_Register("sower", (void*)&RVA_SOW_REFRESH_LAND, "RVA_SOW_REFRESH_LAND", HOT_RVA, 0x215240);
+    HotConfig_Register("sower", (void*)&RVA_SOW_VALIDATE_STATE, "RVA_SOW_VALIDATE_STATE", HOT_RVA, 0x253860);
+    HotConfig_Register("sower", (void*)&RVA_SOW_SETTLE, "RVA_SOW_SETTLE", HOT_RVA, 0x253c10);
+    HotConfig_Register("sower", (void*)&RVA_SOW_SEED_ITEM_LOOKUP, "RVA_SOW_SEED_ITEM_LOOKUP", HOT_RVA, 0x17f8a0);
+    HotConfig_Register("sower", (void*)&RVA_SOW_SEED_ITEM_CHECK, "RVA_SOW_SEED_ITEM_CHECK", HOT_RVA, 0x7768d0);
+    HotConfig_Register("sower", (void*)&RVA_GAME_SINGLETON_PTR, "RVA_GAME_SINGLETON_PTR", HOT_RVA, 0x111cc90);
+    HotConfig_Register("sower", (void*)&RVA_SOW_WORLD_TO_KEY, "RVA_SOW_WORLD_TO_KEY", HOT_RVA, 0x170470);
+    HotConfig_Register("sower", (void*)&RVA_SOW_KEY_TO_WORLD, "RVA_SOW_KEY_TO_WORLD", HOT_RVA, 0x170550);
     HotConfig_Register("sower", (void*)&SAVE_DATA_POINTER_OFFSET, "SAVE_DATA_POINTER_OFFSET", HOT_RVA, 0x208);
     HotConfig_Register("sower", (void*)&SAVE_INVENTORY_UNLOCK_FLAGS_OFFSET, "SAVE_INVENTORY_UNLOCK_FLAGS_OFFSET", HOT_RVA, 0x388);
     HotConfig_Register("sower", (void*)&SAVE_SKIP_ITEM_DEDUCTION_OFFSET, "SAVE_SKIP_ITEM_DEDUCTION_OFFSET", HOT_RVA, 0x340C);
@@ -2595,6 +2660,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
         g_sowerModule = hModule;
         g_sowerModuleForDup = hModule;
         DisableThreadLibraryCalls(hModule);
+    }
+    else if (reason == DLL_PROCESS_DETACH) {
+        qol::obs::Shutdown();  // v1.6.x: 解观测层映射（仅本 DLL 视图）
     }
     return TRUE;
 }

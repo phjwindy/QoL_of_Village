@@ -10,89 +10,93 @@
 // never synthetic markers.  No stamp is appended, serialized, or written to a
 // save file.
 
-static volatile uintptr_t RVA_NIGHT_MAP_REDRAW = 0x2F52F0;
-static volatile uintptr_t RVA_NIGHT_MAP_INITIALIZER_CALL = 0x2F14F5;
-static volatile uintptr_t RVA_NIGHT_MAP_VECTOR_READ = 0x2F535C;
-static volatile uintptr_t RVA_NIGHT_MAP_VECTOR_RANGE_LOAD = 0x2F536A;
-static volatile uintptr_t RVA_NIGHT_MAP_TASK_VTABLE = 0xE42D38;
-static volatile uintptr_t RVA_NIGHT_MAP_TASK_COL = 0xEDDB88;
-static volatile uintptr_t RVA_NIGHT_MAP_TASK_TYPE = 0x1095748;
-static volatile uintptr_t RVA_NIGHT_MAP_TASK_INITIALIZE = 0x2FE900;
-static volatile uintptr_t RVA_NIGHT_MAP_STAMP_VTABLE = 0xE2A368;
-static volatile uintptr_t RVA_NIGHT_MAP_STAMP_COL = 0xEB67B0;
-static volatile uintptr_t RVA_NIGHT_MAP_STAMP_TYPE = 0x1071260;
-static volatile uintptr_t RVA_NIGHT_MAP_STAMP_DESTROY = 0x11B710;
+static volatile uintptr_t RVA_NIGHT_MAP_REDRAW = 0x3016d0;
+static volatile uintptr_t RVA_NIGHT_MAP_INITIALIZER_CALL = 0x2fd8b4;
+static volatile uintptr_t RVA_NIGHT_MAP_VECTOR_READ = 0x30173c;
+static volatile uintptr_t RVA_NIGHT_MAP_VECTOR_RANGE_LOAD = 0x30174A;
+static volatile uintptr_t RVA_NIGHT_MAP_TASK_VTABLE = 0xE5D908;
+static volatile uintptr_t RVA_NIGHT_MAP_TASK_COL = 0xEF9678;
+static volatile uintptr_t RVA_NIGHT_MAP_TASK_TYPE = 0x10B4690;
+// 该常量仅用于 self-check 的 mapTaskVtable[29] 一致性。新版该槽由旧 thunk
+// （lea rax,[rip+X]; ret）改指真实实现，故取"新 vtable 的 slot29 值"而非函数体匹配。
+// vtable 身份由 RTTI 链确认：旧 0xE42D38 → 新 0xE5D908（同 .?AVCTask_MainMenu_Map@@ + COL off 0x200）
+// 见 Tools/relocate_allow.json 豁免说明（2026-10-28）
+static volatile uintptr_t RVA_NIGHT_MAP_TASK_INITIALIZE = 0x795940;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_VTABLE = 0xE44D78;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_COL = 0xED1BC0;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_TYPE = 0x108FED0;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_DESTROY = 0x11E110;
 
-static volatile uintptr_t RVA_NIGHT_CREATURE_VTABLE = 0xE27AF8;
-static volatile uintptr_t RVA_NIGHT_CREATURE_COL = 0xEB1780;
-static volatile uintptr_t RVA_NIGHT_CREATURE_TYPE = 0x106D5A0;
-static volatile uintptr_t RVA_NIGHT_CREATURE_DESTROY = 0xECA14;
-static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_VTABLE = 0xE3E5D0;
-static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_COL = 0xED5A90;
-static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_COPY = 0x28E4C0;
-static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_INVOKE = 0x28E4B0;
-static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_DESTROY = 0x1969B0;
-static volatile uintptr_t RVA_NIGHT_MAP_INFORMATION_VTABLE = 0xE354E8;
-static volatile uintptr_t RVA_NIGHT_MAP_INFORMATION_COL = 0xEC8330;
-static volatile uintptr_t RVA_NIGHT_MAP_INFORMATION_TYPE = 0x1080890;
-static volatile uintptr_t RVA_NIGHT_COM_MAP_VTABLE = 0xE314D0;
-static volatile uintptr_t RVA_NIGHT_COM_MAP_COL = 0xEC2228;
-static volatile uintptr_t RVA_NIGHT_COM_MAP_TYPE = 0x107C640;
-static volatile uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_10 = 0xE313B8;
-static volatile uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_20 = 0xE314E0;
-static volatile uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_248 = 0xE313C8;
-static volatile uintptr_t RVA_NIGHT_CREATURE_CONSTRUCTOR = 0xE7400;
-static volatile uintptr_t RVA_NIGHT_CREATURE_DATA_BIND = 0xE779E;
-static volatile uintptr_t RVA_NIGHT_CREATURE_ID_ACCESS = 0xE80EC;
-static volatile uintptr_t RVA_NIGHT_CREATURE_ID_FORMAT = 0xE27588;
-static volatile uintptr_t RVA_NIGHT_SPATIAL_SEARCH = 0x194060;
-static volatile uintptr_t RVA_NIGHT_RAW_VECTOR_FREE = 0xB8720;
-static volatile uintptr_t RVA_NIGHT_STATUS_UNIQUE_ID_GETTER = 0x119590;
-static volatile uintptr_t RVA_NIGHT_STATUS_POSITION_GETTER = 0x1195A0;
-static volatile uintptr_t RVA_NIGHT_MAP_AREA_RESOLVER = 0x16D860;
-static volatile uintptr_t RVA_NIGHT_MAP_AREA_RESOLVER_BOUNDS = 0x16D983;
-static volatile uintptr_t RVA_NIGHT_LIVE_AREA_RESOLVER = 0x1D5F00;
-static volatile uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_CHAIN = 0x1725A1;
-static volatile uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_LIVE_CALL = 0x1725D6;
-static volatile uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_CALL = 0x1725EB;
-static volatile uintptr_t RVA_NIGHT_MAP_AREA_STATUS_CHAIN = 0xE09C4;
-static volatile uintptr_t RVA_NIGHT_MAP_AREA_STATUS_LIVE_CALL = 0xE09EB;
-static volatile uintptr_t RVA_NIGHT_MAP_AREA_STATUS_CALL = 0xE0A00;
-static volatile uintptr_t RVA_NIGHT_WORLD_TO_MAP = 0x223600;
-static volatile uintptr_t RVA_NIGHT_VECTOR_ADD = 0xE7250;
-static volatile uintptr_t RVA_NIGHT_WORLD_TO_MAP_CALL = 0x2E9E5B;
-static volatile uintptr_t RVA_NIGHT_POSITION_GETTER_CALL = 0x2E9E45;
-static volatile uintptr_t RVA_NIGHT_VECTOR_ADD_CALL = 0x2E9EAD;
-static volatile uintptr_t RVA_NIGHT_MAP_STAMP_POSITION_COPY = 0x2F5526;
-static volatile uintptr_t RVA_NIGHT_MAP_STAMP_NATIVE_LIMIT = 0x2F5512;
-static volatile uintptr_t RVA_NIGHT_MAP_STAMP_ALLOCATION = 0x2F5540;
-static volatile uintptr_t RVA_NIGHT_MAP_STAMP_LAYOUT_WRITES = 0x2F557F;
-static volatile uintptr_t RVA_NIGHT_MAP_STAMP_ATLAS_TYPE = 0x2F5394;
-static volatile uintptr_t RVA_NIGHT_MAP_STAMP_SELECTION = 0x2F77C2;
-static volatile uintptr_t RVA_NIGHT_STAMP_POSITION_READ = 0x2F5406;
-static volatile uintptr_t RVA_NIGHT_STAMP_RENDER_ARGS = 0x2F544E;
-static volatile uintptr_t RVA_NIGHT_STAMP_RENDER_CALL = 0x2F5474;
-static volatile uintptr_t RVA_NIGHT_STAMP_LOOP_ADVANCE = 0x2F5479;
-static volatile uintptr_t RVA_NIGHT_STAMP_RENDERER = 0x740C50;
-static volatile uintptr_t RVA_NIGHT_RENDERER_R9_OVERWRITE = 0x740CD2;
-static volatile uintptr_t RVA_NIGHT_ENABLED_MEMBERSHIP_PROOF = 0x1916D2;
-static volatile uintptr_t RVA_NIGHT_SPATIAL_OWNER_CHAIN = 0xE05D3;
-static volatile uintptr_t RVA_NIGHT_SPATIAL_OWNER_LOOKUP_CALL = 0xE05EF;
-static volatile uintptr_t RVA_NIGHT_SPATIAL_OWNER_LOOKUP = 0x18E0C0;
-static volatile uintptr_t RVA_NIGHT_SPATIAL_ADMISSION_WINDOW = 0xEC576;
-static volatile uintptr_t RVA_NIGHT_SPATIAL_ADMISSION_CALL = 0xEC580;
-static volatile uintptr_t RVA_NIGHT_SPATIAL_ADMISSION = 0x18DE80;
-static volatile uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT_WINDOW = 0x18DEDD;
-static volatile uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT_CALL = 0x18DEEF;
-static volatile uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT = 0x11A880;
-static volatile uintptr_t RVA_NIGHT_MEMBERSHIP_ADMISSION_CALL = 0x191722;
-static volatile uintptr_t RVA_NIGHT_MAP_DIVISOR = 0xA2AA88;
-static volatile uintptr_t RVA_NIGHT_MAP_SCALE_ONE = 0xE92D54;
-static volatile uintptr_t RVA_NIGHT_MAP_OFFSET_X = 0xE932B0;
-static volatile uintptr_t RVA_NIGHT_MAP_OFFSET_Y = 0xE93544;
-static volatile uintptr_t RVA_NIGHT_PLAYER_STATUS_VTABLE = 0xE2B790;
-static volatile uintptr_t RVA_NIGHT_PLAYER_STATUS_COL = 0xEB8AC0;
-static volatile uintptr_t RVA_NIGHT_PLAYER_STATUS_TYPE = 0x10730C0;
+static volatile uintptr_t RVA_NIGHT_CREATURE_VTABLE = 0xE42328;
+static volatile uintptr_t RVA_NIGHT_CREATURE_COL = 0xECCC00;
+static volatile uintptr_t RVA_NIGHT_CREATURE_TYPE = 0x108C270;
+static volatile uintptr_t RVA_NIGHT_CREATURE_DESTROY = 0xEF2E4;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_VTABLE = 0xE592D0;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_COL = 0xEF1428;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_COPY = 0x296E30;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_INVOKE = 0x296E20;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CALLBACK_DESTROY = 0x1999B0;
+static volatile uintptr_t RVA_NIGHT_MAP_INFORMATION_VTABLE = 0xE4FEF0;
+static volatile uintptr_t RVA_NIGHT_MAP_INFORMATION_COL = 0xEE35B8;
+static volatile uintptr_t RVA_NIGHT_MAP_INFORMATION_TYPE = 0x109F520;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_VTABLE = 0xE4BA98;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_COL = 0xEDD118;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_TYPE = 0x109A7E8;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_10 = 0xE4BA50;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_20 = 0xE4BE90;
+static volatile uintptr_t RVA_NIGHT_COM_MAP_SECONDARY_248 = 0xE4BCA8;
+static volatile uintptr_t RVA_NIGHT_CREATURE_CONSTRUCTOR = 0xe9cd0;
+static volatile uintptr_t RVA_NIGHT_CREATURE_DATA_BIND = 0xea06e;
+static volatile uintptr_t RVA_NIGHT_CREATURE_ID_ACCESS = 0xea9bc;
+static volatile uintptr_t RVA_NIGHT_CREATURE_ID_FORMAT = 0xE41E38;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_SEARCH = 0x197060;
+static volatile uintptr_t RVA_NIGHT_RAW_VECTOR_FREE = 0xbaff0;
+static volatile uintptr_t RVA_NIGHT_STATUS_UNIQUE_ID_GETTER = 0x11c070;
+static volatile uintptr_t RVA_NIGHT_STATUS_POSITION_GETTER = 0x11c080;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_RESOLVER = 0x170870;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_RESOLVER_BOUNDS = 0x170993;
+static volatile uintptr_t RVA_NIGHT_LIVE_AREA_RESOLVER = 0x1d8fd0;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_CHAIN = 0x1755b1;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_LIVE_CALL = 0x1755e6;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_PLAYER_CALL = 0x1755fb;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_STATUS_CHAIN = 0xe3294;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_STATUS_LIVE_CALL = 0xe32bb;
+static volatile uintptr_t RVA_NIGHT_MAP_AREA_STATUS_CALL = 0xe32d0;
+static volatile uintptr_t RVA_NIGHT_WORLD_TO_MAP = 0x2266f0;
+static volatile uintptr_t RVA_NIGHT_VECTOR_ADD = 0xe9b20;
+static volatile uintptr_t RVA_NIGHT_WORLD_TO_MAP_CALL = 0x2f5f2a;
+static volatile uintptr_t RVA_NIGHT_POSITION_GETTER_CALL = 0x2f5f14;
+static volatile uintptr_t RVA_NIGHT_VECTOR_ADD_CALL = 0x2f5f7c;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_POSITION_COPY = 0x301906;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_NATIVE_LIMIT = 0x3018f2;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_ALLOCATION = 0x301920;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_LAYOUT_WRITES = 0x30195f;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_ATLAS_TYPE = 0x301774;
+static volatile uintptr_t RVA_NIGHT_MAP_STAMP_SELECTION = 0x303ba2;
+static volatile uintptr_t RVA_NIGHT_STAMP_POSITION_READ = 0x3017e6;
+static volatile uintptr_t RVA_NIGHT_STAMP_RENDER_ARGS = 0x30182e;
+static volatile uintptr_t RVA_NIGHT_STAMP_RENDER_CALL = 0x301854;
+static volatile uintptr_t RVA_NIGHT_STAMP_LOOP_ADVANCE = 0x301859;
+static volatile uintptr_t RVA_NIGHT_STAMP_RENDERER = 0x757ef0;
+static volatile uintptr_t RVA_NIGHT_RENDERER_R9_OVERWRITE = 0x757f72;
+static volatile uintptr_t RVA_NIGHT_ENABLED_MEMBERSHIP_PROOF = 0x1946d2;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_OWNER_CHAIN = 0xe2ea3;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_OWNER_LOOKUP_CALL = 0xe2ebf;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_OWNER_LOOKUP = 0x1910c0;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_ADMISSION_WINDOW = 0xeee46;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_ADMISSION_CALL = 0xeee50;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_ADMISSION = 0x190e80;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT_WINDOW = 0x190edd;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT_CALL = 0x190eef;
+static volatile uintptr_t RVA_NIGHT_SPATIAL_INDEX_INSERT = 0x11d320;
+static volatile uintptr_t RVA_NIGHT_MEMBERSHIP_ADMISSION_CALL = 0x194722;
+static volatile uintptr_t RVA_NIGHT_MAP_DIVISOR = 0xa44318;
+static volatile uintptr_t RVA_NIGHT_MAP_SCALE_ONE = 0xeae1a4;
+static volatile uintptr_t RVA_NIGHT_MAP_OFFSET_X = 0xeae70c;
+static volatile uintptr_t RVA_NIGHT_MAP_OFFSET_Y = 0xeae9ac;
+static volatile uintptr_t RVA_NIGHT_PLAYER_STATUS_VTABLE = 0xE45F88;
+static volatile uintptr_t RVA_NIGHT_PLAYER_STATUS_COL = 0xED3840;
+static volatile uintptr_t RVA_NIGHT_PLAYER_STATUS_TYPE = 0x1091888;
 
 // --- 0x250910 (StatusSearchByBaseID) --------------------------------------
 // Searches the g_gimmickMgr hash map (RVA 0x10DCA20) for a live gimmick
@@ -112,8 +116,8 @@ static volatile uintptr_t RVA_NIGHT_PLAYER_STATUS_TYPE = 0x10730C0;
 //   returns rax = pointer to live gimmick status, or null if not found
 // Note: both paths (null/non-null) end with cleanup+ret; the error path
 // hits int3 but is unreachable for valid baseIDs.
-static volatile uintptr_t RVA_NIGHT_GIMMICK_MGR = 0x1104C80;
-static volatile uintptr_t RVA_NIGHT_STATUS_SEARCH_BY_BASE_ID = 0x259300;
+static volatile uintptr_t RVA_NIGHT_GIMMICK_MGR = 0x1124D60;
+static volatile uintptr_t RVA_NIGHT_STATUS_SEARCH_BY_BASE_ID = 0x261a00;
 static constexpr uintptr_t NIGHT_STATUS_SEARCH_SIG_LENGTH = 11;
 
 // Function type for direct call:
@@ -131,25 +135,47 @@ static NightStatusSearchByBaseIDFunc g_nightStatusSearchByBaseID = nullptr;
 //   [0x00..0x0F] float4 world coords (x, y, z, w)
 //   [0x10..0x17] void* ref (may be null)
 //   [0x20]       bool found (1 = anchor exists, 0 = not found)
-static volatile uintptr_t RVA_NIGHT_EXACT_ANCHOR_SEARCH = 0x1CC450;
+static volatile uintptr_t RVA_NIGHT_EXACT_ANCHOR_SEARCH = 0x1CF520;
 static constexpr size_t NIGHT_EXACT_ANCHOR_HOOK_LENGTH = 14;
 
 // 0x183B10: hash-map lookup (spatialOwner, uint64_t areaId) -> entry*.
 // (0x183B10 was the old RVA; capstone disasm of 0x2657F0 proved the real
 //  call is to 0x183B90 at 0x265903.)
-static volatile uintptr_t RVA_NIGHT_MAP_HASH_LOOKUP = 0x18E0C0;
+static volatile uintptr_t RVA_NIGHT_MAP_HASH_LOOKUP = 0x1910c0;
 
 // Flag system RVAs (collected-item filtering).
-// 0x2A1B0: save data accessor.  void* __fastcall(void* gameDB)
-//   gameDB = [0x10DC9B0].  Returns save data object.
-//   [save + 0x98] = gimmick list begin, [save + 0xA0] = end.
-// 0x10D4950: global save data pointer (g_savePtr).
-//   [g_savePtr + 0x208] = flag bitmap base.
-//   Flag test: qword at [bitmap_base + (flag_idx>>6)*8 + 0x90],
-//   bit = flag_idx & 0x3F.  Set = collected.
-static volatile uintptr_t RVA_NIGHT_SAVE_DATA_ACCESSOR = 0x27A40;
-static volatile uintptr_t RVA_NIGHT_SAVE_DATA_PTR = 0x10FCBB0;
-static volatile uintptr_t RVA_NIGHT_GAME_DB_PTR = 0x1104C10;
+// v1.0.59 (FN-010, v1.20 build 25311578): the gimmick/gadget template
+//   container is obtained by calling the native accessor 0x2A3B0 with
+//   gameDB = [exe+0x1104C10]; the container object C holds the gimmick
+//   template vector at C+0x98 (begin) / C+0xA0 (end).  This is the
+//   successor of the v1.09 accessor 0x2A1B0 (RVA drift +0x200).
+//   The old 0x27A40 label was wrong - that address is the raw FNV-1a
+//   hash primitive, never call it as an accessor.
+// Flag bitmap: [[exe+0x10FCBB0(GAME_ROOT)+0x208] + 0x90 + (flag_idx>>6)*8],
+//   bit = flag_idx & 0x3F.  Set = collected.  Verified against five
+//   independent native OR-writers (FN-010).
+static volatile uintptr_t RVA_NIGHT_SAVE_DATA_ACCESSOR = 0x2A430;
+// v1.0.61: 齿轮模板容器 accessor（FN-010 同族 getter：0x285A0，key=0xB7C90；
+// 书本=0x2A3B0。齿轮条目与书本同构：P2+0x2B0=collected flagIdx1、
+// P2+0x2D0=placed flagIdx2、P2+0x2E0=itemNum（int32）。
+// 调用模式与书容器相同（rcx=gameDB，redraw hook 主线程直调）。
+// 2026-11-09 v1.30 重定位（KB-134）：0x285A0 是 v1.20 地址，v1.30 同址
+// 已不是函数入口（cf ff 50 38 90...），直调必被 SEH 吞并回退兜底。
+// getter 主族 76 项序列全对齐、整体 +0x2AC0，key 工厂族 +0x28D0，
+// 函数体 195B 同构 => 正确入口 0x2B060（key 0xB7C90 -> 0xBA560）。
+static volatile uintptr_t RVA_NIGHT_GEAR_ACCESSOR = 0x2B060;
+// v1.0.63: 容器 +0x58 哈希表查询（游戏侧调用点 0x285842：rcx=map、rdx=&outNode、
+//   r8=&key；未命中返回哨兵节点，哨兵 = container+0x60）。v1.0.61 的「齿轮
+//   flagIdx 在 P2+0x2B0（24100 段）」是书本布局误用——实测该容器对象步长
+//   0xF0，+0x2B0 越界读到邻居对象 → 0 命中 → 兜底全显示（空标依旧）。
+// 2026-11-09 v1.30 重定位（KB-134）：0x3FD80 在 v1.30 同址已非函数入口；
+// v1.20 FUN_14003fd80(size=205) 在 v1.30 唯一严格同构命中 0x42840
+// （24B aob_head 完全相同 + size=205），平移量同为 +0x2AC0。
+static volatile uintptr_t RVA_NIGHT_MAP_FIND = 0x42840;
+static constexpr uintptr_t NIGHT_GEAR_SENTINEL_OFFSET = 0x60;
+static constexpr size_t NIGHT_GEAR_ANCHOR_MAX = 256;
+static volatile uintptr_t RVA_NIGHT_SAVE_DATA_PTR = 0x111cc90;
+static volatile uintptr_t RVA_NIGHT_GAME_DB_PTR = 0x1124CF0;
 
 static constexpr uintptr_t NIGHT_ROOT_MAP_OWNER_OFFSET = 0x268;
 static constexpr uintptr_t NIGHT_ROOT_MAIN_STATUS_OFFSET = 0x208;
@@ -157,7 +183,7 @@ static constexpr uintptr_t NIGHT_PLAYER_STATUS_OFFSET = 0x32b8;
 static constexpr uintptr_t NIGHT_MAP_INFO_OFFSET = 0x0d8;
 static constexpr uintptr_t NIGHT_MAP_SPATIAL_OWNER_OFFSET = 0x030;
 static constexpr uintptr_t NIGHT_MAP_SPATIAL_INDEX_OFFSET = 0x6e0;
-static constexpr uintptr_t NIGHT_STAMP_VECTOR_OFFSET = 0x35d8;
+static constexpr uintptr_t NIGHT_STAMP_VECTOR_OFFSET = 0x35e0;
 static constexpr uintptr_t NIGHT_MAP_OBJECT_UNIQUE_ID_OFFSET = 0x0e0;
 static constexpr uintptr_t NIGHT_MAP_OBJECT_LIVE_OFFSET = 0x150;
 static constexpr uintptr_t NIGHT_MAP_OBJECT_LIVE_VALID_OFFSET = 0x158;
@@ -350,6 +376,9 @@ static void* g_nightStampRangeRelay = nullptr;
 static bool g_nightMapMarkersAvailable = false;
 static std::atomic<bool> g_nightMapMarkersEnabled{true};
 static std::atomic<bool> g_nightMapMarkersFaulted{false};
+// v1.0.58: 书/齿轮锚点显示开关（F2 快捷菜单控制，默认开）。
+// 老鼠/宝箱怪标记不受此开关影响，始终随地图绘制。
+static std::atomic<bool> g_nightBookGearShown{true};
 static thread_local bool g_insideNightMapRedraw = false;
 static thread_local NightPointerVector* g_nightTransientStampVector = nullptr;
 static thread_local bool g_nightTransientStampVectorResolved = false;
@@ -371,6 +400,14 @@ struct NightAnchorCacheEntry {
 };
 static NightAnchorCacheEntry g_nightAnchorCache[NIGHT_ANCHOR_CACHE_CAPACITY];
 static std::atomic<size_t> g_nightAnchorCacheCount{0};
+// v1.0.70：活体物件标记（链上 gimmick_event_kirakira_machine_parts / _lost_book
+//   的真实坐标，实测与 0x1C1A00 锚点坐标同一体系、逐点吻合）。
+struct NightLiveMark {
+    float worldPos[4];
+    int stampType;
+};
+static NightLiveMark g_nightLiveMarks[NIGHT_ANCHOR_CACHE_CAPACITY];
+static std::atomic<size_t> g_nightLiveMarkCount{0};
 // 0x1C1A00 signature: void* __fastcall(void* mapObj, void* outBuf, const char* anchorName)
 // Returns outBuf (rax = rdx).  outBuf+0x20 = found flag.
 using NightExactAnchorSearchFunc = void* (__fastcall *)(void*, void*,
@@ -409,11 +446,16 @@ static NightProgressiveScanState g_nightProgressive = {};
 // corresponding bit tells whether the item has been collected.
 using NightSaveDataAccessorFunc = void* (__fastcall *)(void*);
 static NightSaveDataAccessorFunc g_nightSaveDataAccessor = nullptr;
+// v1.0.59 (FN-010): all three entry-field offsets drifted +0x58 from
+// v1.09 (0x258/0x278/0x288 -> 0x2B0/0x2D0/0x2E0).  The list offsets
+// below apply to the gimmick template container returned by the native
+// accessor 0x2A3B0, NOT to the save object (the save object's +0x90 area
+// IS the flag bitmap itself).
 static constexpr uintptr_t NIGHT_GIMMICK_LIST_BEGIN_OFFSET = 0x98;
 static constexpr uintptr_t NIGHT_GIMMICK_LIST_END_OFFSET = 0xA0;
-static constexpr uintptr_t NIGHT_GIMMICK_FLAG_IDX1_OFFSET = 0x258;
-static constexpr uintptr_t NIGHT_GIMMICK_FLAG_IDX2_OFFSET = 0x278;
-static constexpr uintptr_t NIGHT_GIMMICK_ITEM_NUMBER_OFFSET = 0x288;
+static constexpr uintptr_t NIGHT_GIMMICK_FLAG_IDX1_OFFSET = 0x2B0;
+static constexpr uintptr_t NIGHT_GIMMICK_FLAG_IDX2_OFFSET = 0x2D0;
+static constexpr uintptr_t NIGHT_GIMMICK_ITEM_NUMBER_OFFSET = 0x2E0;
 static constexpr uintptr_t NIGHT_FLAG_BITMAP_BASE_OFFSET = 0x208;
 static constexpr uintptr_t NIGHT_FLAG_BITMAP_QWORD_OFFSET = 0x90;
 // Books: 01-62, Machine parts: 01-50.
@@ -452,7 +494,7 @@ static bool g_nightGearPlaced[NIGHT_COLLECTED_MAX] = {};
 //   [62..111] = gears,  baseID n = 499900000 + (n-1)
 static constexpr u64 NIGHT_BOOK_BASEID_FIRST = 490400000ULL;
 static constexpr u64 NIGHT_GEAR_BASEID_FIRST = 499900000ULL;
-static constexpr uintptr_t NIGHT_ALL_OBJECTS_CALLBACK_VTABLE = 0xE3E608;
+static constexpr uintptr_t NIGHT_ALL_OBJECTS_CALLBACK_VTABLE = 0xE59110;
 
 // v1.0.10: candidate callback vtables paired with the spatial-search
 // destroy helper (RVA 0x18C290).  The v1.0.7 F7 brute-force scan proved
@@ -1430,41 +1472,79 @@ static inline u64 NightLogRedrawDiagnostics(const NightCollectDiagnostics&, size
 // previously thought).  v1.0.18's removal was based on incomplete log
 // analysis: collected books DO have placed=1 (placed in a previous night),
 // but uncollected books with placed=0 were never placed tonight.
+//
+// v1.0.60: build 成功标志 g_nightFilterValid——失败（位图/容器链断）时
+// 锚点过滤回退全显示（v1.0.34 基线行为），防 placed 全 0 把书本全滤掉。
+static bool g_nightFilterValid = false;
+
+// v1.0.63: 齿轮 flag 解析——复刻游戏 0x285842 起的哈希查询链：
+//   find(map, &node, &key) → node（哨兵=未命中）→ value=*(node+0x18)
+//   → flag=*(int32*)(value+0xD0)。全 SEH + 可读性保护，任何异常→false
+//   （调用方回退 v1.0.20 兜底，行为不更差）。
+static bool NightGearResolveFlag(uintptr_t base, unsigned char* map,
+                                 void* sentinel, uint64_t key,
+                                 int32_t* outFlag) {
+    if (!base || !map || !outFlag) return false;
+    *outFlag = 0;
+    void* node = nullptr;
+    __try {
+        auto find = reinterpret_cast<void (*)(void*, void**, const void**)>(
+            base + RVA_NIGHT_MAP_FIND);
+        find(map, &node, reinterpret_cast<const void**>(&key));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    if (!node) return false;
+    if (sentinel && node == sentinel) return false;   // 未命中 → 哨兵
+    void* value = nullptr;
+    if (!NightReadPointer(node, 0x18, &value) || !value) return false;
+    unsigned char* v = reinterpret_cast<unsigned char*>(value);
+    if (!NightIsReadable(v + 0xD4, sizeof(int32_t))) return false;
+    const int32_t flag = *reinterpret_cast<int32_t*>(v + 0xD0);
+    if (flag <= 0 || flag > 0x200000) return false;   // 合理性区间
+    *outFlag = flag;
+    return true;
+}
+
 static void NightBuildCollectedSet() {
+    g_nightFilterValid = false;  // 开头假定失败；走到底才算成功
     memset(g_nightBookCollected, 0, sizeof(g_nightBookCollected));
     memset(g_nightGearCollected, 0, sizeof(g_nightGearCollected));
     memset(g_nightBookPlaced, 0, sizeof(g_nightBookPlaced));
     memset(g_nightGearPlaced, 0, sizeof(g_nightGearPlaced));
-    if (!g_nightSaveDataAccessor) return;
+    // v1.0.59 (FN-010, v1.20 build 25311578): full chain rewrite.
+    //   Bitmap:  root=[base+RVA_GAME_ROOT], bitmapBase=[root+0x208],
+    //            flag qword at [bitmapBase + (flagIdx>>6)*8 + 0x90].
+    //   Gimmick template list: gameDB=[base+RVA_NIGHT_GAME_DB_PTR],
+    //            container C = native accessor 0x2A3B0(gameDB),
+    //            vector at C+0x98/C+0xA0.  Entry layout (drift +0x58):
+    //            P1=listBegin[i], P2=*P1, flagIdx1=P2+0x2B0 (collected),
+    //            flagIdx2=P2+0x2D0 (placed), itemNum=P2+0x2E0 (int32).
+    //   The v1.0.53 save-object blind scan (save 0x90..0x318) is gone:
+    //   saveObj+0x90 IS the flag bitmap itself, so that scan could never
+    //   find a list -- the real cause behind "collected filter disabled".
     const uintptr_t base = reinterpret_cast<uintptr_t>(
         GetModuleHandleW(nullptr));
 
-    // Read game DB pointer and call save data accessor.
-    if (!NightIsReadable(reinterpret_cast<void*>(
-            base + RVA_NIGHT_GAME_DB_PTR), sizeof(void*)))
-        return;
-    void* gameDB = *reinterpret_cast<void**>(
-        base + RVA_NIGHT_GAME_DB_PTR);
-    if (!gameDB) return;
-    void* saveData = nullptr;
-    __try {
-        saveData = g_nightSaveDataAccessor(gameDB);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    // --- Flag bitmap chain (collected lookups) ---
+    void* rootPtr = nullptr;
+    if (!NightReadPointer(reinterpret_cast<void*>(base + RVA_GAME_ROOT),
+                          0, &rootPtr) || !rootPtr) {
+        Log("[NightMapMarkers][diag] collected-set: game root unreadable\n");
         return;
     }
-    if (!saveData) return;
-
-    // Read global save pointer for flag bitmap base.
-    if (!NightIsReadable(reinterpret_cast<void*>(
-            base + RVA_NIGHT_SAVE_DATA_PTR), sizeof(void*)))
-        return;
-    void* savePtr = *reinterpret_cast<void**>(
-        base + RVA_NIGHT_SAVE_DATA_PTR);
-    if (!savePtr) return;
     void* bitmapBase = nullptr;
-    if (!NightReadPointer(savePtr, NIGHT_FLAG_BITMAP_BASE_OFFSET,
-                          &bitmapBase) || !bitmapBase)
+    if (!NightReadPointer(rootPtr, NIGHT_ROOT_MAIN_STATUS_OFFSET,
+                          &bitmapBase) || !bitmapBase) {
+        Log("[NightMapMarkers][diag] collected-set: flag bitmap "
+            "(root+0x208) unreadable root=%p\n", rootPtr);
         return;
+    }
+
+    // v1.0.59: the v1.0.57 one-shot manager-slot probe is removed -- its
+    // purpose is fulfilled (FN-003: 0x1104C80 is a service registry, and
+    // the real gimmick template container sits behind the accessor
+    // queried below, not behind any manager slot).
 
     // Test flag bit: qword at [bitmap_base + (flagIdx>>6)*8 + 0x90].
     const auto nightFlagSet = [bitmapBase](uint64_t flagIdx) -> bool {
@@ -1481,20 +1561,76 @@ static void NightBuildCollectedSet() {
         return ((qword >> bitPos) & 1) != 0;
     };
 
-    // --- Book collected set (from save data gimmick list) ---
-    // Read gimmick list [saveData+0x98 .. saveData+0xA0].
+    // --- Gimmick template container (native accessor, SEH-guarded) ---
+    // Direct native call mirrors the game's own book-placement loop
+    // (0x272400): same accessor, same gameDB.  We run on the game thread
+    // (map redraw hook), so TLS state is the game's own -- the same
+    // pattern v1.09..v1.0.52 used for the 0x2A1B0 accessor.
+    if (!g_nightSaveDataAccessor) {
+        g_nightSaveDataAccessor =
+            reinterpret_cast<NightSaveDataAccessorFunc>(
+                base + RVA_NIGHT_SAVE_DATA_ACCESSOR);
+    }
+    void* gameDB = nullptr;
+    if (!NightReadPointer(
+            reinterpret_cast<void*>(base + RVA_NIGHT_GAME_DB_PTR),
+            0, &gameDB) || !gameDB) {
+        Log("[NightMapMarkers][diag] collected-set: gameDB "
+            "(+[0x%X]) unreadable; collected filter disabled\n",
+            static_cast<unsigned>(RVA_NIGHT_GAME_DB_PTR));
+        return;
+    }
+    void* container = nullptr;
+    __try {
+        container = g_nightSaveDataAccessor(gameDB);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        container = nullptr;
+    }
+    if (!container || !NightIsReadable(container, 0xA8)) {
+        Log("[NightMapMarkers][diag] collected-set: gimmick container "
+            "unreachable (accessor+r0x%X gameDB=%p); collected filter "
+            "disabled\n",
+            static_cast<unsigned>(RVA_NIGHT_SAVE_DATA_ACCESSOR), gameDB);
+        return;
+    }
     void** listBegin = nullptr;
     void** listEnd = nullptr;
-    if (!NightReadPointer(saveData, NIGHT_GIMMICK_LIST_BEGIN_OFFSET,
-                          reinterpret_cast<void**>(&listBegin)) ||
-        !NightReadPointer(saveData, NIGHT_GIMMICK_LIST_END_OFFSET,
-                          reinterpret_cast<void**>(&listEnd)))
-        return;
-    if (!listBegin || !listEnd || listEnd < listBegin) return;
+    {
+        void* b = nullptr; void* e = nullptr;
+        if (!NightReadPointer(container, NIGHT_GIMMICK_LIST_BEGIN_OFFSET,
+                              &b) ||
+            !NightReadPointer(container, NIGHT_GIMMICK_LIST_END_OFFSET,
+                              &e) ||
+            !b || !e || e < b) {
+            Log("[NightMapMarkers][diag] collected-set: gimmick list "
+                "(container+0x98) unreadable container=%p\n", container);
+            return;
+        }
+        const uintptr_t delta = reinterpret_cast<uintptr_t>(e) -
+                                reinterpret_cast<uintptr_t>(b);
+        if (delta % 8 != 0 || delta / 8 > 4096) {
+            Log("[NightMapMarkers][diag] collected-set: gimmick list "
+                "bounds rejected (delta=%llu container=%p)\n",
+                static_cast<unsigned long long>(delta), container);
+            return;
+        }
+        listBegin = reinterpret_cast<void**>(b);
+        listEnd = reinterpret_cast<void**>(e);
+    }
     const size_t entryCount = static_cast<size_t>(
         (reinterpret_cast<uintptr_t>(listEnd) -
          reinterpret_cast<uintptr_t>(listBegin)) / sizeof(void*));
-    if (entryCount > 4096) return;  // sanity limit
+    if (entryCount > 4096) return;
+    {
+        static std::atomic<size_t> s_lastListLogged{
+            static_cast<size_t>(-1)};
+        if (s_lastListLogged.exchange(entryCount,
+                std::memory_order_relaxed) != entryCount) {
+            Log("[NightMapMarkers][diag] gimmick list: container=%p "
+                "entryCount=%zu (v1.0.59 FN-010 chain)\n",
+                container, entryCount);
+        }
+    }
 
     size_t bookCollectedCount = 0;
     size_t bookPlacedCount = 0;
@@ -1582,32 +1718,194 @@ static void NightBuildCollectedSet() {
     }
     s_dumpedEntries = true;
 
-    // --- Machine part collected set ---
-    // Machine parts use flag indices starting at 24100 (0-based itemNum 0
-    // -> flagIdx 24100, itemNum 1 -> 24101, ... itemNum 49 -> 24149).
-    // This base is derived from the book pattern (23100 + itemNum) shifted
-    // by 1000 for the machine part category.
+    // --- Machine part collected/placed set ---
+    // v1.0.61: 齿轮真 placed 数据——遍历齿轮模板容器（v1.20 0x285A0 /
+    // v1.30 0x2B060，FN-010 同族 getter，与书容器同模式：rcx=gameDB，主线程
+    // 直调）。条目与书同构：P2+0x2B0=collected flagIdx1、P2+0x2D0=placed
+    // flagIdx2、P2+0x2E0=itemNum。
+    // 防御链：SEH 直调 + 容器/vector 完整性校验 + 条目 flagIdx1 段校验
+    // [24100,24150) + 有效条目数>0；任一失败回退 v1.0.20 兜底（collected
+    // 位图直查 + 未收集保守 placed，行为=过滤启用前现状，不会更差）。
     static constexpr uint64_t GEAR_FLAGIDX_BASE = 24100;
-        // v1.0.20: machine part placed set — gear flagIdx2 is at subObj+0x278,
-        // same offset as books.  But gears are NOT in the save gimmick list,
-        // so we cannot iterate entries.  Instead we probe flagIdx2 directly.
-        // For now, mark all uncollected gears as placed (conservative) until
-        // we can identify the correct gear flagIdx2 base.  The 0x1C1A00 found
-        // flag will still filter out non-existent anchors on the current map.
-        // TODO: find gear flagIdx2 base (book is 23100+itemNum, collected is
-        // 24100+itemNum, placement flag may be a third base or same as collected).
     size_t gearCollectedCount = 0;
     size_t gearPlacedCount = 0;
-    for (int g = 0; g < 50; ++g) {
-        if (nightFlagSet(GEAR_FLAGIDX_BASE + static_cast<uint64_t>(g))) {
-            g_nightGearCollected[g + 1] = true;
-            ++gearCollectedCount;
+    bool gearContainerOk = false;
+    size_t gearValidEntries = 0;
+    do {
+        void* gearContainer = nullptr;
+        __try {
+            gearContainer = reinterpret_cast<void* (*)(void*)>(
+                base + RVA_NIGHT_GEAR_ACCESSOR)(gameDB);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            gearContainer = nullptr;
         }
-        // v1.0.20: conservative — mark all uncollected gears as placed.
-        // The 0x1C1A00 found flag is the real filter for gears.
-        if (!g_nightGearCollected[g + 1]) {
-            g_nightGearPlaced[g + 1] = true;
-            ++gearPlacedCount;
+        if (!gearContainer || !NightIsReadable(gearContainer, 0xA8)) {
+            Log("[NightMapMarkers][diag] gear container unreachable "
+                "(rva 0x%X gameDB=%p)\n",
+                static_cast<unsigned>(RVA_NIGHT_GEAR_ACCESSOR), gameDB);
+            break;
+        }
+        void* gb = nullptr;
+        void* ge = nullptr;
+        if (!NightReadPointer(gearContainer,
+                              NIGHT_GIMMICK_LIST_BEGIN_OFFSET, &gb) ||
+            !NightReadPointer(gearContainer,
+                              NIGHT_GIMMICK_LIST_END_OFFSET, &ge) ||
+            !gb || !ge || ge < gb) {
+            Log("[NightMapMarkers][diag] gear vector unreadable\n");
+            break;
+        }
+        const uintptr_t gdelta = reinterpret_cast<uintptr_t>(ge) -
+                                 reinterpret_cast<uintptr_t>(gb);
+        if (gdelta % 8 != 0 || gdelta / 8 > 4096) {
+            Log("[NightMapMarkers][diag] gear vector bounds rejected\n");
+            break;
+        }
+        void** gearBegin = reinterpret_cast<void**>(gb);
+        const size_t gearEntries = static_cast<size_t>(gdelta / 8);
+        void* gearSentinel = nullptr;
+        if (!NightReadPointer(gearContainer, NIGHT_GEAR_SENTINEL_OFFSET,
+                              &gearSentinel) || !gearSentinel)
+            gearSentinel = nullptr;
+        // v1.0.63: 齿轮条目实测 dump（前 24 条）——输出 key/flag/collected，
+        // 用于确认哈希链解析正确；v1.0.62 的字段全景已作废（0x2B0 越界读数）
+        size_t gearDumped = 0;
+        __try {
+            for (size_t i = 0; i < gearEntries; ++i) {
+                void* e1 = nullptr;
+                if (!NightReadPointer(gearBegin + i, 0, &e1) || !e1) continue;
+                void* p2 = nullptr;
+                if (!NightReadPointer(e1, 0, &p2) || !p2) continue;
+                if (!NightIsReadable(p2,
+                        NIGHT_GIMMICK_ITEM_NUMBER_OFFSET + sizeof(int32_t)))
+                    continue;
+                const uint64_t gf1 =
+                    *reinterpret_cast<uint64_t*>(
+                        reinterpret_cast<uintptr_t>(p2) +
+                        NIGHT_GIMMICK_FLAG_IDX1_OFFSET);
+                const uint64_t gf2 =
+                    *reinterpret_cast<uint64_t*>(
+                        reinterpret_cast<uintptr_t>(p2) +
+                        NIGHT_GIMMICK_FLAG_IDX2_OFFSET);
+                // v1.0.63: 齿轮 collected 走游戏自身路径——key=[P2+0]（dump 实测
+                // 为 1..24 的部件号）→ 容器 +0x58 哈希表 → value+0xD0 = flagIdx
+                //（0x2857B0 拾取链逐指令复刻）。
+                const uint64_t gearKey = *reinterpret_cast<uint64_t*>(p2);
+                if (gearKey == 0 || gearKey > 4096) continue;
+                int32_t gearFlag = 0;
+                if (!NightGearResolveFlag(
+                        base, reinterpret_cast<unsigned char*>(gearContainer) +
+                                  0x58, gearSentinel, gearKey, &gearFlag))
+                    continue;
+                const bool gcollected =
+                    nightFlagSet(static_cast<uint64_t>(gearFlag));
+                const size_t gearIdx = static_cast<size_t>(gearKey);
+                ++gearValidEntries;
+                if (gearIdx < NIGHT_GEAR_ANCHOR_MAX) {
+                    // 齿轮 = 常驻拾取物：不做「今晚放置」过滤，只按 collected 过滤
+                    g_nightGearPlaced[gearIdx] = true;
+                    ++gearPlacedCount;
+                    if (gcollected) {
+                        g_nightGearCollected[gearIdx] = true;
+                        ++gearCollectedCount;
+                    }
+                }
+                if (gearDumped < 200) {   // v1.0.64-diag: 全量 dump（原 24 条上限→看不到后半段 flag 分布）
+                    Log("[NightMapMarkers][diag] gearMap[%zu] key=%llu flag=%d "
+                        "coll=%d f0x2B0=%llu f0x2D0=%llu\n",
+                        gearDumped, (unsigned long long)gearKey, (int)gearFlag,
+                        (int)gcollected,
+                        (unsigned long long)gf1, (unsigned long long)gf2);
+                    ++gearDumped;
+                }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            gearValidEntries = 0;  // 遍历中途异常：整体回退
+        }
+        gearContainerOk = (gearValidEntries > 0);
+        if (gearContainerOk) {
+            Log("[NightMapMarkers][diag] gear container OK: entries=%zu "
+                "valid=%zu placed=%zu\n",
+                gearEntries, gearValidEntries, gearPlacedCount);
+        }
+    } while (false);
+    // v1.0.64-diag: 同族容器探测——定位"机件 50 锚点"的真容器
+    //   FN-010 家族为 v1.20 地址；v1.30 统一 +0x2AC0：
+    //     0x2A3B0(书本)->0x2CE70 / 0x2A480->0x2CF40 /
+    //     0x285A0(齿轮)->0x2B060 / 0x29B90->0x2C650
+    //   输出：条目数 + 前 8 条的 (key, +0xD0, +0xD8)，用于判断哪个容器与 50 锚点 1:1
+    {
+        static const uintptr_t kProbeGetters[2] = { 0x2CF40, 0x2C650 };
+        for (int pi = 0; pi < 2; ++pi) {
+            const uintptr_t grva = kProbeGetters[pi];
+            void* c = nullptr;
+            __try {
+                c = reinterpret_cast<void* (*)(void*)>(base + grva)(gameDB);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                c = nullptr;
+            }
+            if (!c || !NightIsReadable(c, 0xA8)) {
+                Log("[NightMapMarkers][diag] probe 0x%X: unreachable\n",
+                    static_cast<unsigned>(grva));
+                continue;
+            }
+            void* pb = nullptr;
+            void* pe = nullptr;
+            if (!NightReadPointer(c, NIGHT_GIMMICK_LIST_BEGIN_OFFSET, &pb) ||
+                !NightReadPointer(c, NIGHT_GIMMICK_LIST_END_OFFSET, &pe) ||
+                !pb || !pe || pe < pb) {
+                Log("[NightMapMarkers][diag] probe 0x%X: vector bad\n",
+                    static_cast<unsigned>(grva));
+                continue;
+            }
+            const uintptr_t pd = reinterpret_cast<uintptr_t>(pe) -
+                                 reinterpret_cast<uintptr_t>(pb);
+            if (pd % 8 != 0 || pd / 8 > 4096) {
+                Log("[NightMapMarkers][diag] probe 0x%X: bounds %llu\n",
+                    static_cast<unsigned>(grva),
+                    static_cast<unsigned long long>(pd / 8));
+                continue;
+            }
+            const size_t pcnt = static_cast<size_t>(pd / 8);
+            Log("[NightMapMarkers][diag] probe 0x%X: entries=%zu\n",
+                static_cast<unsigned>(grva), pcnt);
+            size_t pshown = 0;
+            __try {
+                for (size_t i = 0; i < pcnt && pshown < 8; ++i) {
+                    void* e1 = nullptr;
+                    if (!NightReadPointer(reinterpret_cast<void**>(pb) + i, 0,
+                                          &e1) || !e1) continue;
+                    void* p2 = nullptr;
+                    if (!NightReadPointer(e1, 0, &p2) || !p2) continue;
+                    if (!NightIsReadable(p2, 0xE0)) continue;
+                    const unsigned long long k0 =
+                        *reinterpret_cast<uint64_t*>(p2);
+                    const unsigned long long f0 =
+                        *reinterpret_cast<uint64_t*>(
+                            reinterpret_cast<uintptr_t>(p2) + 0xD0);
+                    const unsigned long long f8 =
+                        *reinterpret_cast<uint64_t*>(
+                            reinterpret_cast<uintptr_t>(p2) + 0xD8);
+                    Log("[NightMapMarkers][diag] probe 0x%X[%zu] p2=%p k0=%llu "
+                        "fD0=%llu fD8=%llu\n",
+                        static_cast<unsigned>(grva), pshown, p2, k0, f0, f8);
+                    ++pshown;
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+        }
+    }
+    if (!gearContainerOk) {
+        // v1.0.20 兜底：collected 位图直查 + 未收集保守 placed（全显示）
+        for (int g = 0; g < 50; ++g) {
+            if (nightFlagSet(GEAR_FLAGIDX_BASE + static_cast<uint64_t>(g))) {
+                g_nightGearCollected[g + 1] = true;
+                ++gearCollectedCount;
+            }
+            if (!g_nightGearCollected[g + 1]) {
+                g_nightGearPlaced[g + 1] = true;
+                ++gearPlacedCount;
+            }
         }
     }
 
@@ -1622,6 +1920,7 @@ static void NightBuildCollectedSet() {
             entryCount, bookCollectedCount, bookPlacedCount,
             gearCollectedCount, gearPlacedCount);
     }
+    g_nightFilterValid = true;  // v1.0.60: 全链走通，过滤数据可信
 }
 
 // v1.0.29: 精简版活体枚举——只搜 0xE1C168 一个 callback，不调 destroy
@@ -2156,17 +2455,31 @@ static void NightScanAnchors(void* mapInfo, u64 playerAreaId) {
                          "pop_machine_part%02d", itemNum);
         }
 
-        // v1.0.34: 只过滤已收集——书/齿轮全部显示（不区分今晚是否放置）。
-        // placed 标志不可靠（齿轮无 placed 数据，书的 flagIdx2 是模板级
-        // 标志），用户选择"全部显示"方案：0x1C1A00 found 锚点全标。
+        // v1.0.60: 恢复“今晚放置”过滤（用户反馈：地图有图标但当晚实地
+        // 无物可捡）。v1.0.34 曾全显示（当时认为 placed 不可靠）——该论断
+        // 已被 FN-011（2026-10-12 放置主循环 0x272400 反汇编实锤）推翻：
+        //   放置门控 = (flagIdx1 位未 SET) && (flagIdx2==0 || flagIdx2 位 SET)
+        // 书本 flagIdx2（模板 P2+0x2D0）语义可靠，NightBuildCollectedSet
+        // 已按此门控填充 g_nightBookPlaced——此处启用。
+        // 齿轮 placed 仍保守全显示（当年 TODO 未解，保持行为不变防误杀；
+        // 齿轮条目 FN-010 容器链的 flagIdx2 验证留待后续）。
+        // v1.0.66: 回退 v1.0.65 的"活体实体"判据（三次实测已证不可用，见上）。
+        //   恢复锚点 + collected/placed 过滤（v1.0.60 形态）：
+        //   书本 = 已收集 or 未放置 → 不标；机件 = 已收集 → 不标（placed 无独立数据）
+        //   已知局限：仍会含空标（placed 数据不可靠），根治靠后续「gimmick 链实体匹配」
         bool isCollected = false;
+        bool isPlacedTonight = true;
         if (idx < 62) {
             isCollected = g_nightBookCollected[itemNum];
+            isPlacedTonight = !g_nightFilterValid ||
+                              g_nightBookPlaced[itemNum];
         } else {
             isCollected = g_nightGearCollected[itemNum];
+            isPlacedTonight = g_nightGearPlaced[itemNum];
         }
         ++idx;
-        if (isCollected) continue;
+        if (isCollected || !isPlacedTonight)
+            continue;  // 已收集 或 今晚不放置 → 不标
 
         // v1.0.15: query 0x1C1A00 for the anchor's world coordinates --
         // the same function the game's own placement code (0x2657F0) uses.
@@ -2176,6 +2489,26 @@ static void NightScanAnchors(void* mapInfo, u64 playerAreaId) {
             func(mapObj, outBuf, anchorName);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             continue;
+        }
+        // v1.0.67-diag: 锚点搜索 outBuf **全字段 dump**（会话内前 200 条=覆盖
+        //   全部 112 锚点）。目的：确认 0x1CC450 除 [0x20]=found 外是否还有
+        //   "今晚是否生成/可见"标志——若有即 MM 空标的正确判据（KB-020：v1.09
+        //   时代仅用 found 就够；v1.20 疑似 found 退化为"锚点已注册"）。
+        {
+            static int s_dumpCount = 0;
+            if (s_dumpCount < 200) {
+                ++s_dumpCount;
+                char hex[3 * 0x28 + 1] = {};
+                static const char* kHex = "0123456789abcdef";
+                for (int b = 0; b < 0x28; ++b) {
+                    hex[b * 3] = kHex[(outBuf[b] >> 4) & 0xF];
+                    hex[b * 3 + 1] = kHex[outBuf[b] & 0xF];
+                    hex[b * 3 + 2] = (b == 0x27) ? 0 : ' ';
+                }
+                Log("[NightMapMarkers][diag] anchor#%zu name=%s found=%u "
+                    "outBuf=%s\n", idx, anchorName,
+                    static_cast<unsigned>(outBuf[0x20]), hex);
+            }
         }
         if (outBuf[0x20] == 0) continue;  // anchor not found on this map
         const float* coords = reinterpret_cast<const float*>(outBuf);
@@ -2232,6 +2565,148 @@ static void NightScanAnchors(void* mapInfo, u64 playerAreaId) {
                 bookCount, gearCount);
         }
     }
+}
+
+// ============================================================
+// v1.0.70：活体物件扫描 → 产出书/机件标记（取代锚点作为显示源）
+//
+// 依据（2026-10-17 实测，area=100000001 夜间）：
+//   - 链上能稳定枚举到 gimmick_event_kirakira_machine_parts（机件，x9）与
+//     gimmick_event_kirakira_lost_book（书本，x22），模块名 100% 可读
+//     （data+0xE0），整链 843 对象耗时 47ms（缓存版可读判定）
+//   - 它们的世界坐标与 0x1C1A00 锚点坐标**同一体系**且逐点吻合
+//     （例：锚点 book12=(10009,18415) == 活体 (10009,18415)；
+//      book17=(3250,10463)、book23=(13784,14111)、book35=(9516,10432) 全等）
+//   - 同一时刻锚点只查到 books=22 / gears=0 → 齿轮 anchor 查不到，
+//     这就是"齿轮在但地图没标记"的直接原因；而部分锚点 found=1 但当晚
+//     没生成物件 → "空标"
+// 因此：显示源改为活体枚举。物件已被捡走就不在链上，天然不需要 collected 过滤。
+// 只读，不调用任何游戏函数。
+// ============================================================
+static void NightScanLiveMarks(uintptr_t exeBase, u64 playerAreaId) {
+    static u64 s_lastArea = ~u64{0};
+    static ULONGLONG s_lastScanTick = 0;
+    const ULONGLONG nowTick = GetTickCount64();
+    const bool areaChanged = (playerAreaId != s_lastArea);
+    // 同一张地图也按时间节流重扫（≥5s，单次 ≈47ms）：玩家捡走书本/机件后
+    // 物件会从链上消失，重扫才能让标记跟着消失（旧版只在换图时刷新会留残标）。
+    if (!areaChanged && s_lastScanTick != 0 &&
+        nowTick - s_lastScanTick < 5000) return;
+    s_lastArea = playerAreaId;
+    s_lastScanTick = nowTick;
+
+    g_nightLiveMarkCount.store(0, std::memory_order_release);
+
+    LARGE_INTEGER fq = {}, t0 = {}, t1 = {};
+    QueryPerformanceFrequency(&fq);
+    QueryPerformanceCounter(&t0);
+
+    void* root = nullptr;
+    void* save = nullptr;
+    void* sentinel = nullptr;
+    if (!NightReadPointer(reinterpret_cast<void*>(exeBase + RVA_GAME_ROOT), 0,
+                          &root) ||
+        !root || !NightReadPointer(root, 0x208, &save) || !save ||
+        !NightReadPointer(save, 0x3448, &sentinel) || !sentinel) {
+        Log("[NightMapMarkers][live] chain unreadable root=%p save=%p "
+            "sentinel=%p\n", root, save, sentinel);
+        return;
+    }
+    const u64 declared = *reinterpret_cast<const u64*>(
+        reinterpret_cast<const unsigned char*>(save) + 0x3450);
+
+    void* node = nullptr;
+    if (!NightReadPointer(sentinel, 0, &node)) return;
+
+    size_t visited = 0, books = 0, gears = 0, stored = 0;
+    void* previous = sentinel;
+    for (size_t i = 0; i < declared && i < 8192; ++i) {
+        if (!node || node == sentinel ||
+            !NightIsReadable(node, sizeof(void*) * 3))
+            break;
+        if (*reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(node) + sizeof(void*)) !=
+            previous)
+            break;
+        void* status = *reinterpret_cast<void**>(
+            reinterpret_cast<unsigned char*>(node) + sizeof(void*) * 2);
+        ++visited;
+
+        if (status && NightIsReadable(status, 0x2f0)) {
+            const unsigned char* sb =
+                reinterpret_cast<const unsigned char*>(status);
+            char mod[48] = {};
+            const void* holder =
+                *reinterpret_cast<const void* const*>(sb + 0x240);
+            if (holder && NightIsReadable(holder, sizeof(void*))) {
+                const void* data = *reinterpret_cast<const void* const*>(holder);
+                if (data &&
+                    NightIsReadable(
+                        reinterpret_cast<const unsigned char*>(data) + 0xe0,
+                        sizeof(void*))) {
+                    const char* mp = *reinterpret_cast<const char* const*>(
+                        reinterpret_cast<const unsigned char*>(data) + 0xe0);
+                    if (mp && NightIsReadable(mp, 2)) {
+                        for (size_t k = 0; k + 1 < sizeof(mod); ++k) {
+                            if (!NightIsReadable(mp + k, 1)) break;
+                            const unsigned char c =
+                                static_cast<unsigned char>(mp[k]);
+                            if (c == 0) break;
+                            if (c < 0x20 || c >= 0x7f) break;
+                            mod[k] = static_cast<char>(c);
+                        }
+                    }
+                }
+            }
+
+            int stampType = -1;
+            if (mod[0] && strcmp(mod, "gimmick_event_kirakira_machine_parts") == 0)
+                stampType = NIGHT_STAMP_TYPE_MACHINE_PART;
+            else if (mod[0] && strcmp(mod, "gimmick_event_kirakira_lost_book") == 0)
+                stampType = NIGHT_STAMP_TYPE_LOST_BOOK;
+
+            if (stampType != -1) {
+                const float x = *reinterpret_cast<const float*>(sb + 0xf0);
+                const float y = *reinterpret_cast<const float*>(sb + 0xf4);
+                const float z = *reinterpret_cast<const float*>(sb + 0xf8);
+                if (std::isfinite(x) && std::isfinite(y) &&
+                    stored < NIGHT_ANCHOR_CACHE_CAPACITY) {
+                    NightLiveMark* mark = &g_nightLiveMarks[stored];
+                    mark->worldPos[0] = x;
+                    mark->worldPos[1] = y;
+                    mark->worldPos[2] = z;
+                    mark->worldPos[3] = 1.0f;
+                    mark->stampType = stampType;
+                    ++stored;
+                    if (stampType == NIGHT_STAMP_TYPE_MACHINE_PART)
+                        ++gears;
+                    else
+                        ++books;
+                    if (stored <= 5) {
+                        Log("[NightMapMarkers][live] mark gid=%s pos=(%.0f,%.0f) "
+                            "type=%d\n",
+                            stampType == NIGHT_STAMP_TYPE_MACHINE_PART
+                                ? "machine_part" : "lost_book",
+                            x, y, stampType);
+                    }
+                }
+            }
+        }
+        previous = node;
+        node = *reinterpret_cast<void**>(node);
+    }
+
+    g_nightLiveMarkCount.store(stored, std::memory_order_release);
+
+    QueryPerformanceCounter(&t1);
+    const double ms =
+        fq.QuadPart ? (static_cast<double>(t1.QuadPart - t0.QuadPart) * 1000.0 /
+                       static_cast<double>(fq.QuadPart))
+                    : 0.0;
+    Log("[NightMapMarkers][live] scan area=%llu visited=%zu declared=%llu "
+        "books=%zu gears=%zu stored=%zu took=%.0fms\n",
+        static_cast<unsigned long long>(playerAreaId), visited,
+        static_cast<unsigned long long>(declared), books, gears, stored, ms);
 }
 
 // v1.0.36 fix: hour = ((rawSecond % 86400) / 3600 + 7) % 24（+7 为显示偏移，
@@ -2402,20 +2877,35 @@ static void __fastcall NightMapRedrawDetour(void* mapTask) {
     void* mapInfo = nullptr;
     {
         NightReadableRegionCacheScope anchorScope(&readableCache);
-        if (NightReadPointer(reinterpret_cast<void*>(base + RVA_GAME_ROOT), 0, &root) &&
-            NightReadPointer(root, NIGHT_ROOT_MAP_OWNER_OFFSET, &mapOwner) &&
-            NightReadPointer(mapOwner, NIGHT_MAP_INFO_OFFSET, &mapInfo)) {
-            // v1.0.35: 停用书/齿轮锚点标记——0x1C1A00 无法区分"锚点有定义"
-            // 与"今晚实际生成"，用户实测仍有空标。暂不显示书/齿轮，
-            // 只保留幽灵鼠/宝箱标记。待未来逆向"实际生成物列表"后再恢复。
-            // NightScanAnchors(mapInfo, diagnostics.playerAreaId);
+        // v1.0.52: 指针链逐级诊断（01:35 会话链曾静默失败导致 scan 未跑）
+        bool anchorChainOk = true;
+        if (!NightReadPointer(reinterpret_cast<void*>(base + RVA_GAME_ROOT), 0, &root)) {
+            Log("[NightMapMarkers][anchor] chain fail: game_root unreadable\n");
+            anchorChainOk = false;
+        } else if (!NightReadPointer(root, NIGHT_ROOT_MAP_OWNER_OFFSET, &mapOwner)) {
+            Log("[NightMapMarkers][anchor] chain fail: map_owner (root+0x268) "
+                "unreadable root=%p\n", root);
+            anchorChainOk = false;
+        } else if (!NightReadPointer(mapOwner, NIGHT_MAP_INFO_OFFSET, &mapInfo)) {
+            Log("[NightMapMarkers][anchor] chain fail: map_info (owner+0xd8) "
+                "unreadable owner=%p\n", mapOwner);
+            anchorChainOk = false;
+        }
+        if (anchorChainOk) {
+            // v1.1.0：书/机件显示源已改为活体枚举（FN-023）。
+            //   旧的 0x1C1A00 锚点查询与空间索引活体枚举都不再参与显示，
+            //   也不再调用（省掉每次开图 112 次哈希查找 + 25ms 级扫描）。
+            //   两段代码保留备查，未删除。
+            NightScanLiveMarks(base, diagnostics.playerAreaId);
         }
     }
 
     const size_t anchorCount = g_nightAnchorCacheCount.load(
         std::memory_order_relaxed);
+    const size_t liveMarkCountForGate = g_nightLiveMarkCount.load(
+        std::memory_order_relaxed);
     if (g_nightMapMarkersFaulted.load(std::memory_order_relaxed) ||
-        (targetCount == 0 && anchorCount == 0)) {
+        (targetCount == 0 && anchorCount == 0 && liveMarkCountForGate == 0)) {
         NightLogRedrawDiagnostics(diagnostics, targetCount, ghostRatCount,
                                   treasureBoxCount, false, 0, 0);
         g_originalNightMapRedraw(mapTask);
@@ -2492,20 +2982,15 @@ static void __fastcall NightMapRedrawDetour(void* mapTask) {
     // 返回 0"。0x1C1A00 是游戏放置逻辑 0x2657F0 同款查询，坐标可靠。
     // collected/placed 过滤已在 NightScanAnchors 中完成。
     size_t anchorStampCount = 0;
-    const size_t anchorCacheCount = g_nightAnchorCacheCount.load(
+    const bool bookGearShown = g_nightBookGearShown.load(std::memory_order_relaxed);
+    // v1.0.70：显示源 = 活体枚举（锚点仅保留作诊断，锚点 found 不代表当晚生成，
+    //   且齿轮锚点在实测中一个都查不到 → 旧逻辑既空标又漏标）。
+    const size_t liveMarkCount = g_nightLiveMarkCount.load(
         std::memory_order_relaxed);
-    for (size_t ai = 0; ai < anchorCacheCount; ++ai) {
-        if (!g_nightAnchorCache[ai].valid) continue;
-        const char* name = g_nightAnchorCache[ai].name;
-        int anchorStampType = -1;
-        if (strncmp(name, "pop_machine_part", 16) == 0) {
-            anchorStampType = NIGHT_STAMP_TYPE_MACHINE_PART;
-        } else if (strncmp(name, "pop_lost_book", 13) == 0) {
-            anchorStampType = NIGHT_STAMP_TYPE_LOST_BOOK;
-        } else {
-            continue;
-        }
-        const float* wp = g_nightAnchorCache[ai].worldPos;
+    for (size_t ai = 0; ai < liveMarkCount; ++ai) {
+        if (!bookGearShown) break;  // F2 关闭书/齿轮显示：跳过全部标记
+        const int anchorStampType = g_nightLiveMarks[ai].stampType;
+        const float* wp = g_nightLiveMarks[ai].worldPos;
         if (!std::isfinite(wp[0]) || !std::isfinite(wp[1])) continue;
         alignas(16) float worldPos[4] = {};
         alignas(16) float mapPos[4] = {};
@@ -2523,9 +3008,9 @@ static void __fastcall NightMapRedrawDetour(void* mapTask) {
         ++anchorStampCount;
     }
     if (anchorStampCount > 0) {
-        Log("[NightMapMarkers] anchor_stamps=%zu cache_count=%zu "
+        Log("[NightMapMarkers] live_stamps=%zu live_count=%zu "
             "machine_part=stamp%d lost_book=stamp%d\n",
-            anchorStampCount, anchorCacheCount,
+            anchorStampCount, liveMarkCount,
             NIGHT_STAMP_TYPE_MACHINE_PART, NIGHT_STAMP_TYPE_LOST_BOOK);
     }
     const size_t combinedCount = existingCount + targetCount + anchorStampCount;
@@ -2592,15 +3077,13 @@ static bool InstallNightMapMarkers() {
         0x00, 0x00
     };
     static const unsigned char initializerCallExpected[5] = {
-        0xE8, 0xF6, 0x3D, 0x00, 0x00
-    };
+        0xE8, 0x17, 0x3E, 0x00, 0x00,};
     static const unsigned char vectorReadExpected[37] = {
-        0x48, 0x8B, 0x05, 0x4D, 0x78, 0xE0, 0x00, 0x48,
+        0x48, 0x8B, 0x05, 0x4D, 0xB5, 0xE1, 0x00, 0x48,
         0x8B, 0x88, 0x08, 0x02, 0x00, 0x00, 0x48, 0x8B,
-        0xB1, 0xE0, 0x35, 0x00, 0x00, 0x48, 0x8B, 0x99,
-        0xD8, 0x35, 0x00, 0x00, 0x48, 0x3B, 0xDE, 0x0F,
-        0x84, 0x05, 0x01, 0x00, 0x00
-    };;
+        0xB1, 0xE8, 0x35, 0x00, 0x00, 0x48, 0x8B, 0x99,
+        0xE0, 0x35, 0x00, 0x00, 0x48, 0x3B, 0xDE, 0x0F,
+        0x84, 0x05, 0x01, 0x00, 0x00,};;
     static const unsigned char spatialExpected[14] = {
         0x40, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
         0x41, 0x57, 0x48, 0x83, 0xEC, 0x60
@@ -2612,9 +3095,8 @@ static bool InstallNightMapMarkers() {
     static const unsigned char creatureConstructorExpected[31] = {
         0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x4C,
         0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48,
-        0x8B, 0xD9, 0xE8, 0x99, 0x21, 0x03, 0x00, 0x90,
-        0x48, 0x8D, 0x05, 0x29, 0x6D, 0xD4, 0x00
-    };;
+        0x8B, 0xD9, 0xE8, 0xA9, 0x23, 0x03, 0x00, 0x90,
+        0x48, 0x8D, 0x05, 0x79, 0xEE, 0xD5, 0x00,};;
     static const unsigned char dataBindExpected[24] = {
         0x48, 0x8B, 0x06, 0x48, 0x89, 0x87, 0x90, 0x02,
         0x00, 0x00, 0x4C, 0x8B, 0x30, 0x44, 0x89, 0x7B,
@@ -2623,29 +3105,26 @@ static bool InstallNightMapMarkers() {
     static const unsigned char idAccessExpected[30] = {
         0x48, 0x8B, 0x86, 0x90, 0x02, 0x00, 0x00, 0x4C,
         0x8B, 0x00, 0x4D, 0x8B, 0x40, 0x10, 0x48, 0x8D,
-        0x15, 0x87, 0xF4, 0xD3, 0x00, 0x48, 0x8D, 0x4D,
-        0xA0, 0xE8, 0x66, 0x02, 0x59, 0x00
-    };;
+        0x15, 0x67, 0x74, 0xD5, 0x00, 0x48, 0x8D, 0x4D,
+        0xA0, 0xE8, 0xD6, 0x4A, 0x5A, 0x00,};;
     static const unsigned char worldToMapExpected[27] = {
-        0xF3, 0x0F, 0x10, 0x0D, 0x4C, 0xF7, 0xC6, 0x00,
+        0xF3, 0x0F, 0x10, 0x0D, 0xAC, 0x7A, 0xC8, 0x00,
         0x48, 0x8B, 0xC2, 0xF3, 0x41, 0x0F, 0x5E, 0x08,
         0x0F, 0xC6, 0xC9, 0x00, 0x0F, 0x59, 0x09, 0x0F,
-        0x11, 0x0A, 0xC3
-    };;
+        0x11, 0x0A, 0xC3,};;
     static const unsigned char vectorAddExpected[14] = {
         0x41, 0x0F, 0x10, 0x00, 0x48, 0x8B, 0xC2, 0x0F,
         0x58, 0x01, 0x0F, 0x11, 0x02, 0xC3
     };
     static const unsigned char positionTransformChainExpected[27] = {
-        0xE8, 0x56, 0xF7, 0xE2, 0xFF, 0x4C, 0x8D, 0x05,
-        0x37, 0x0C, 0x74, 0x00, 0x48, 0x8D, 0x95, 0x30,
-        0x14, 0x00, 0x00, 0x48, 0x8B, 0xC8, 0xE8, 0xA0,
-        0x97, 0xF3, 0xFF
-    };;
+        0xE8, 0x67, 0x61, 0xE2, 0xFF, 0x4C, 0x8D, 0x05,
+        0xF8, 0xE3, 0x74, 0x00, 0x48, 0x8D, 0x95, 0x40,
+        0x14, 0x00, 0x00, 0x48, 0x8B, 0xC8, 0xE8, 0xC1,
+        0x07, 0xF3, 0xFF,};;
     static const unsigned char offsetLoadExpected[22] = {
-        0xF3, 0x44, 0x0F, 0x10, 0x25, 0xD8, 0x96, 0xBA,
+        0xF3, 0x44, 0x0F, 0x10, 0x25, 0x71, 0x8A, 0xBB,
         0x00, 0x41, 0x0F, 0x28, 0xD4, 0xF3, 0x44, 0x0F,
-        0x10, 0x0D, 0x37, 0x94, 0xBA, 0x00
+        0x10, 0x0D, 0xC4, 0x87, 0xBB, 0x00
     };;
     static const unsigned char statusPositionGetterExpected[8] = {
         0x48, 0x8D, 0x81, 0xF0, 0x00, 0x00, 0x00, 0xC3
@@ -2693,33 +3172,30 @@ static bool InstallNightMapMarkers() {
         0x74, 0x22, 0x80, 0x3A, 0x00, 0x74, 0x1D, 0x4C,
         0x8B, 0x81, 0x50, 0x01, 0x00, 0x00, 0x48, 0x8D,
         0x91, 0xF0, 0x00, 0x00, 0x00, 0x4D, 0x85, 0xC0,
-        0x74, 0x11, 0x49, 0x8B, 0xC8, 0xE8, 0x25, 0x39,
+        0x74, 0x11, 0x49, 0x8B, 0xC8, 0xE8, 0xE5, 0x39,
         0x06, 0x00, 0xEB, 0x13, 0x48, 0x8D, 0x91, 0xF0,
         0x00, 0x00, 0x00, 0x48, 0x8B, 0x89, 0xE8, 0x00,
-        0x00, 0x00, 0xE8, 0x70, 0xB2, 0xFF, 0xFF
-    };
+        0x00, 0x00, 0xE8, 0x70, 0xB2, 0xFF, 0xFF,};
     static const unsigned char areaStatusChainExpected[69] = {
         0x48, 0x8B, 0x81, 0x58, 0x01, 0x00, 0x00, 0x48,
         0x85, 0xC0, 0x74, 0x22, 0x80, 0x38, 0x00, 0x74,
         0x1D, 0x48, 0x8B, 0x81, 0x50, 0x01, 0x00, 0x00,
         0x48, 0x8D, 0x91, 0xF0, 0x00, 0x00, 0x00, 0x48,
         0x85, 0xC0, 0x74, 0x11, 0x48, 0x8B, 0xC8, 0xE8,
-        0x10, 0x55, 0x0F, 0x00, 0xEB, 0x13, 0x48, 0x8D,
+        0x10, 0x5D, 0x0F, 0x00, 0xEB, 0x13, 0x48, 0x8D,
         0x91, 0xF0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x89,
-        0xE8, 0x00, 0x00, 0x00, 0xE8, 0x5B, 0xCE, 0x08,
-        0x00, 0x48, 0x3B, 0xC7, 0x0F
-    };;
+        0xE8, 0x00, 0x00, 0x00, 0xE8, 0x9B, 0xD5, 0x08,
+        0x00, 0x48, 0x3B, 0xC7, 0x0F,};;
     static const unsigned char liveAreaHeaderExpected[67] = {
         0x4C, 0x8B, 0xDC, 0x48, 0x81, 0xEC, 0xA8, 0x00,
-        0x00, 0x00, 0x48, 0x8B, 0x05, 0x2F, 0x91, 0xE4,
+        0x00, 0x00, 0x48, 0x8B, 0x05, 0x5F, 0x40, 0xE6,
         0x00, 0x48, 0x33, 0xC4, 0x48, 0x89, 0x84, 0x24,
         0x90, 0x00, 0x00, 0x00, 0x49, 0xC7, 0x43, 0xC8,
         0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x49, 0x30,
-        0x48, 0x8D, 0x05, 0x81, 0xF5, 0xC5, 0x00, 0x49,
+        0x48, 0x8D, 0x05, 0x91, 0x6E, 0xC7, 0x00, 0x49,
         0x89, 0x43, 0x88, 0x49, 0x8D, 0x43, 0xC8, 0x49,
         0x89, 0x43, 0x90, 0x49, 0x8D, 0x43, 0x88, 0x49,
-        0x89, 0x43, 0xC0
-    };;
+        0x89, 0x43, 0xC0,};;
     static const unsigned char stampPositionCopyExpected[26] = {
         0xF3, 0x0F, 0x10, 0x81, 0xE4, 0x03, 0x00, 0x00,
         0xF3, 0x0F, 0x10, 0x89, 0xE0, 0x03, 0x00, 0x00,
@@ -2743,10 +3219,9 @@ static bool InstallNightMapMarkers() {
         0x00, 0x00, 0x00
     };
     static const unsigned char stampLayoutWritesExpected[18] = {
-        0x48, 0x8D, 0x05, 0xE2, 0x4D, 0xB3, 0x00, 0x48,
+        0x48, 0x8D, 0x05, 0x12, 0x34, 0xB4, 0x00, 0x48,
         0x89, 0x03, 0x44, 0x89, 0x73, 0x10, 0x0F, 0x11,
-        0x73, 0x20
-    };;
+        0x73, 0x20,};;
     static const unsigned char stampAtlasTypeExpected[28] = {
         0x41, 0x8B, 0x41, 0x10, 0xFF, 0xC0, 0x99, 0x83,
         0xE2, 0x03, 0x03, 0xC2, 0x44, 0x8B, 0xC0, 0x83,
@@ -2767,9 +3242,8 @@ static bool InstallNightMapMarkers() {
         0x24, 0x28, 0xC7, 0x44, 0x24, 0x20, 0xFF, 0xFF,
         0xFF, 0xFF, 0x0F, 0x57, 0xDB, 0x4C, 0x8D, 0x44,
         0x24, 0x40, 0x48, 0x8D, 0x54, 0x24, 0x30, 0x48,
-        0x8B, 0x8F, 0x48, 0x05, 0x00, 0x00, 0xE8, 0xD7,
-        0xB7, 0x44, 0x00, 0x48, 0x83, 0xC3, 0x08
-    };
+        0x8B, 0x8F, 0x48, 0x05, 0x00, 0x00, 0xE8, 0x97,
+        0x66, 0x45, 0x00, 0x48, 0x83, 0xC3, 0x08,};
     static const unsigned char stampLoopExpected[13] = {
         0x48, 0x83, 0xC3, 0x08, 0x48, 0x3B, 0xDE, 0x0F,
         0x85, 0x0B, 0xFF, 0xFF, 0xFF
@@ -2792,21 +3266,18 @@ static bool InstallNightMapMarkers() {
         0xC2, 0x75, 0x15
     };
     static const unsigned char spatialOwnerChainExpected[33] = {
-        0x48, 0x8B, 0x05, 0xD6, 0xC5, 0x01, 0x01, 0x48,
+        0x48, 0x8B, 0x05, 0xE6, 0x9D, 0x03, 0x01, 0x48,
         0x8B, 0x88, 0x68, 0x02, 0x00, 0x00, 0x48, 0x8B,
         0x89, 0xD8, 0x00, 0x00, 0x00, 0x48, 0x8B, 0xD7,
-        0x48, 0x8B, 0x49, 0x30, 0xE8, 0xCC, 0xDA, 0x0A,
-        0x00
-    };;
+        0x48, 0x8B, 0x49, 0x30, 0xE8, 0xFC, 0xE1, 0x0A,
+        0x00,};;
     static const unsigned char spatialAdmissionExpected[15] = {
         0x48, 0x8B, 0x4E, 0x30, 0x41, 0xB0, 0x01, 0x48,
-        0x8B, 0xD3, 0xE8, 0xFB, 0x18, 0x0A, 0x00
-    };
+        0x8B, 0xD3, 0xE8, 0x2B, 0x20, 0x0A, 0x00,};
     static const unsigned char spatialIndexInsertExpected[23] = {
         0x48, 0x8D, 0x8F, 0xE0, 0x06, 0x00, 0x00, 0x66,
         0x0F, 0x7F, 0x74, 0x24, 0x20, 0x4C, 0x8D, 0x44,
-        0x24, 0x20, 0xE8, 0x8C, 0xC9, 0xF8, 0xFF
-    };
+        0x24, 0x20, 0xE8, 0x2C, 0xC4, 0xF8, 0xFF,};
     static const unsigned char divisorExpected[4] = {
         0x4E, 0x62, 0x04, 0x41
     };
@@ -2872,7 +3343,7 @@ static bool InstallNightMapMarkers() {
         memcmp(reinterpret_cast<void*>(base + RVA_NIGHT_POSITION_GETTER_CALL),
                positionTransformChainExpected,
                sizeof(positionTransformChainExpected)) == 0 &&
-        memcmp(reinterpret_cast<void*>(base + 0x2E9E63),
+        memcmp(reinterpret_cast<void*>(base + 0x2F5F32),
                offsetLoadExpected, sizeof(offsetLoadExpected)) == 0 &&
         memcmp(reinterpret_cast<void*>(base + RVA_NIGHT_MAP_STAMP_POSITION_COPY),
                stampPositionCopyExpected,
@@ -2986,6 +3457,11 @@ static bool InstallNightMapMarkers() {
             base + RVA_NIGHT_CREATURE_CALLBACK_INVOKE) &&
         callbackVtable[4] == reinterpret_cast<void*>(
             base + RVA_NIGHT_CREATURE_CALLBACK_DESTROY);
+    // 结构化自检（细项拆分留待后续重构，此处给跨 MOD 汇总表一个总体结论）
+    qol::SelfTest::Begin("monstermark");
+    qol::SelfTest::Add("semantics_ok", semanticsOk, "instruction/RTTI/vtable/call-chain");
+    qol::SelfTest::Flush();
+
     if (!semanticsOk) {
         Log("[NightMapMarkers] instruction/RTTI/vtable/call-chain check FAILED; "
             "feature disabled safely\n");
@@ -3069,9 +3545,8 @@ static bool InstallNightMapMarkers() {
 
     static const unsigned char vectorRangeOriginal[
         NIGHT_MAP_VECTOR_RANGE_HOOK_LENGTH] = {
-        0x48, 0x8b, 0xb1, 0xe0, 0x35, 0x00, 0x00,
-        0x48, 0x8b, 0x99, 0xd8, 0x35, 0x00, 0x00
-    };
+        0x48, 0x8B, 0xB1, 0xE8, 0x35, 0x00, 0x00, 0x48,
+        0x8B, 0x99, 0xE0, 0x35, 0x00, 0x00,};
     unsigned char rangeHook[NIGHT_MAP_VECTOR_RANGE_HOOK_LENGTH] = {
         0xff, 0x25, 0, 0, 0, 0
     };
@@ -3200,11 +3675,10 @@ static bool InstallNightMapMarkers() {
 static bool InstallNightAnchorPosHook() {
     const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
 
-    // Verify the function prologue at 0x1C1A00
+    // Verify the function prologue at 0x1CF520 (v1.30 build 25640656)
     static const unsigned char anchorExpected[NIGHT_EXACT_ANCHOR_HOOK_LENGTH] = {
         0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x54,
-        0x24, 0x10, 0x55, 0x56, 0x57, 0x48
-    };
+        0x24, 0x10, 0x55, 0x56, 0x57, 0x48,};
     if (memcmp(reinterpret_cast<void*>(base + RVA_NIGHT_EXACT_ANCHOR_SEARCH),
                anchorExpected, sizeof(anchorExpected)) != 0) {
         Log("[NightMapMarkers] exact anchor signature mismatch at RVA=0x%llx; "
@@ -3213,10 +3687,9 @@ static bool InstallNightAnchorPosHook() {
         return false;
     }
 
-    // Also verify the full sub rsp instruction (bytes 13..19)
+    // Also verify the full sub rsp instruction (bytes 13..19, v1.30 build 25640656)
     static const unsigned char subRspExpected[7] = {
-        0x48, 0x81, 0xEC, 0xB0, 0x00, 0x00, 0x00
-    };
+        0x48, 0x81, 0xEC, 0xB0, 0x00, 0x00, 0x00,};
     if (memcmp(reinterpret_cast<void*>(base + RVA_NIGHT_EXACT_ANCHOR_SEARCH + 13),
                subRspExpected, sizeof(subRspExpected)) != 0) {
         Log("[NightMapMarkers] exact anchor sub-rsp mismatch; "
@@ -3796,96 +4269,113 @@ static void NightDiagEnumerateHashTable() {
     Log("[NightMapMarkers][hash] === enumeration complete ===\n");
 }
 
-
 // ---- HotConfig 注册函数（在 .inl 中实现以访问 static 变量）----
 void NightHotConfigRegisterAll() {
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_REDRAW, "RVA_NIGHT_MAP_REDRAW", HOT_RVA, 0x2F52F0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INITIALIZER_CALL, "RVA_NIGHT_MAP_INITIALIZER_CALL", HOT_RVA, 0x2F14F5);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_VECTOR_READ, "RVA_NIGHT_MAP_VECTOR_READ", HOT_RVA, 0x2F535C);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_VECTOR_RANGE_LOAD, "RVA_NIGHT_MAP_VECTOR_RANGE_LOAD", HOT_RVA, 0x2F536A);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_VTABLE, "RVA_NIGHT_MAP_TASK_VTABLE", HOT_RVA, 0xE42D38);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_COL, "RVA_NIGHT_MAP_TASK_COL", HOT_RVA, 0xEDDB88);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_TYPE, "RVA_NIGHT_MAP_TASK_TYPE", HOT_RVA, 0x1095748);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_INITIALIZE, "RVA_NIGHT_MAP_TASK_INITIALIZE", HOT_RVA, 0x2FE900);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_VTABLE, "RVA_NIGHT_MAP_STAMP_VTABLE", HOT_RVA, 0xE2A368);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_COL, "RVA_NIGHT_MAP_STAMP_COL", HOT_RVA, 0xEB67B0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_TYPE, "RVA_NIGHT_MAP_STAMP_TYPE", HOT_RVA, 0x1071260);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_DESTROY, "RVA_NIGHT_MAP_STAMP_DESTROY", HOT_RVA, 0x11B710);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_VTABLE, "RVA_NIGHT_CREATURE_VTABLE", HOT_RVA, 0xE27AF8);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_COL, "RVA_NIGHT_CREATURE_COL", HOT_RVA, 0xEB1780);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_TYPE, "RVA_NIGHT_CREATURE_TYPE", HOT_RVA, 0x106D5A0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_DESTROY, "RVA_NIGHT_CREATURE_DESTROY", HOT_RVA, 0xECA14);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_VTABLE, "RVA_NIGHT_CREATURE_CALLBACK_VTABLE", HOT_RVA, 0xE3E5D0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_COL, "RVA_NIGHT_CREATURE_CALLBACK_COL", HOT_RVA, 0xED5A90);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_COPY, "RVA_NIGHT_CREATURE_CALLBACK_COPY", HOT_RVA, 0x28E4C0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_INVOKE, "RVA_NIGHT_CREATURE_CALLBACK_INVOKE", HOT_RVA, 0x28E4B0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_DESTROY, "RVA_NIGHT_CREATURE_CALLBACK_DESTROY", HOT_RVA, 0x1969B0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INFORMATION_VTABLE, "RVA_NIGHT_MAP_INFORMATION_VTABLE", HOT_RVA, 0xE354E8);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INFORMATION_COL, "RVA_NIGHT_MAP_INFORMATION_COL", HOT_RVA, 0xEC8330);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INFORMATION_TYPE, "RVA_NIGHT_MAP_INFORMATION_TYPE", HOT_RVA, 0x1080890);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_VTABLE, "RVA_NIGHT_COM_MAP_VTABLE", HOT_RVA, 0xE314D0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_COL, "RVA_NIGHT_COM_MAP_COL", HOT_RVA, 0xEC2228);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_TYPE, "RVA_NIGHT_COM_MAP_TYPE", HOT_RVA, 0x107C640);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_SECONDARY_10, "RVA_NIGHT_COM_MAP_SECONDARY_10", HOT_RVA, 0xE313B8);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_SECONDARY_20, "RVA_NIGHT_COM_MAP_SECONDARY_20", HOT_RVA, 0xE314E0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_SECONDARY_248, "RVA_NIGHT_COM_MAP_SECONDARY_248", HOT_RVA, 0xE313C8);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CONSTRUCTOR, "RVA_NIGHT_CREATURE_CONSTRUCTOR", HOT_RVA, 0xE7400);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_DATA_BIND, "RVA_NIGHT_CREATURE_DATA_BIND", HOT_RVA, 0xE779E);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_ID_ACCESS, "RVA_NIGHT_CREATURE_ID_ACCESS", HOT_RVA, 0xE80EC);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_ID_FORMAT, "RVA_NIGHT_CREATURE_ID_FORMAT", HOT_RVA, 0xE27588);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_SEARCH, "RVA_NIGHT_SPATIAL_SEARCH", HOT_RVA, 0x194060);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_RAW_VECTOR_FREE, "RVA_NIGHT_RAW_VECTOR_FREE", HOT_RVA, 0xB8720);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STATUS_UNIQUE_ID_GETTER, "RVA_NIGHT_STATUS_UNIQUE_ID_GETTER", HOT_RVA, 0x119590);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STATUS_POSITION_GETTER, "RVA_NIGHT_STATUS_POSITION_GETTER", HOT_RVA, 0x1195A0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_RESOLVER, "RVA_NIGHT_MAP_AREA_RESOLVER", HOT_RVA, 0x16D860);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_RESOLVER_BOUNDS, "RVA_NIGHT_MAP_AREA_RESOLVER_BOUNDS", HOT_RVA, 0x16D983);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_LIVE_AREA_RESOLVER, "RVA_NIGHT_LIVE_AREA_RESOLVER", HOT_RVA, 0x1D5F00);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_PLAYER_CHAIN, "RVA_NIGHT_MAP_AREA_PLAYER_CHAIN", HOT_RVA, 0x1725A1);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_PLAYER_LIVE_CALL, "RVA_NIGHT_MAP_AREA_PLAYER_LIVE_CALL", HOT_RVA, 0x1725D6);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_PLAYER_CALL, "RVA_NIGHT_MAP_AREA_PLAYER_CALL", HOT_RVA, 0x1725EB);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_STATUS_CHAIN, "RVA_NIGHT_MAP_AREA_STATUS_CHAIN", HOT_RVA, 0xE09C4);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_STATUS_LIVE_CALL, "RVA_NIGHT_MAP_AREA_STATUS_LIVE_CALL", HOT_RVA, 0xE09EB);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_STATUS_CALL, "RVA_NIGHT_MAP_AREA_STATUS_CALL", HOT_RVA, 0xE0A00);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_WORLD_TO_MAP, "RVA_NIGHT_WORLD_TO_MAP", HOT_RVA, 0x223600);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_VECTOR_ADD, "RVA_NIGHT_VECTOR_ADD", HOT_RVA, 0xE7250);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_WORLD_TO_MAP_CALL, "RVA_NIGHT_WORLD_TO_MAP_CALL", HOT_RVA, 0x2E9E5B);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_POSITION_GETTER_CALL, "RVA_NIGHT_POSITION_GETTER_CALL", HOT_RVA, 0x2E9E45);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_VECTOR_ADD_CALL, "RVA_NIGHT_VECTOR_ADD_CALL", HOT_RVA, 0x2E9EAD);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_POSITION_COPY, "RVA_NIGHT_MAP_STAMP_POSITION_COPY", HOT_RVA, 0x2F5526);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_NATIVE_LIMIT, "RVA_NIGHT_MAP_STAMP_NATIVE_LIMIT", HOT_RVA, 0x2F5512);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_ALLOCATION, "RVA_NIGHT_MAP_STAMP_ALLOCATION", HOT_RVA, 0x2F5540);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_LAYOUT_WRITES, "RVA_NIGHT_MAP_STAMP_LAYOUT_WRITES", HOT_RVA, 0x2F557F);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_ATLAS_TYPE, "RVA_NIGHT_MAP_STAMP_ATLAS_TYPE", HOT_RVA, 0x2F5394);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_SELECTION, "RVA_NIGHT_MAP_STAMP_SELECTION", HOT_RVA, 0x2F77C2);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_POSITION_READ, "RVA_NIGHT_STAMP_POSITION_READ", HOT_RVA, 0x2F5406);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_RENDER_ARGS, "RVA_NIGHT_STAMP_RENDER_ARGS", HOT_RVA, 0x2F544E);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_RENDER_CALL, "RVA_NIGHT_STAMP_RENDER_CALL", HOT_RVA, 0x2F5474);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_LOOP_ADVANCE, "RVA_NIGHT_STAMP_LOOP_ADVANCE", HOT_RVA, 0x2F5479);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_RENDERER, "RVA_NIGHT_STAMP_RENDERER", HOT_RVA, 0x740C50);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_RENDERER_R9_OVERWRITE, "RVA_NIGHT_RENDERER_R9_OVERWRITE", HOT_RVA, 0x740CD2);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_ENABLED_MEMBERSHIP_PROOF, "RVA_NIGHT_ENABLED_MEMBERSHIP_PROOF", HOT_RVA, 0x1916D2);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_OWNER_CHAIN, "RVA_NIGHT_SPATIAL_OWNER_CHAIN", HOT_RVA, 0xE05D3);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_OWNER_LOOKUP_CALL, "RVA_NIGHT_SPATIAL_OWNER_LOOKUP_CALL", HOT_RVA, 0xE05EF);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_OWNER_LOOKUP, "RVA_NIGHT_SPATIAL_OWNER_LOOKUP", HOT_RVA, 0x18E0C0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_ADMISSION_WINDOW, "RVA_NIGHT_SPATIAL_ADMISSION_WINDOW", HOT_RVA, 0xEC576);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_ADMISSION_CALL, "RVA_NIGHT_SPATIAL_ADMISSION_CALL", HOT_RVA, 0xEC580);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_ADMISSION, "RVA_NIGHT_SPATIAL_ADMISSION", HOT_RVA, 0x18DE80);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_INDEX_INSERT_WINDOW, "RVA_NIGHT_SPATIAL_INDEX_INSERT_WINDOW", HOT_RVA, 0x18DEDD);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_INDEX_INSERT_CALL, "RVA_NIGHT_SPATIAL_INDEX_INSERT_CALL", HOT_RVA, 0x18DEEF);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_INDEX_INSERT, "RVA_NIGHT_SPATIAL_INDEX_INSERT", HOT_RVA, 0x11A880);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MEMBERSHIP_ADMISSION_CALL, "RVA_NIGHT_MEMBERSHIP_ADMISSION_CALL", HOT_RVA, 0x191722);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_DIVISOR, "RVA_NIGHT_MAP_DIVISOR", HOT_RVA, 0xA2AA88);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_SCALE_ONE, "RVA_NIGHT_MAP_SCALE_ONE", HOT_RVA, 0xE92D54);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_OFFSET_X, "RVA_NIGHT_MAP_OFFSET_X", HOT_RVA, 0xE932B0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_OFFSET_Y, "RVA_NIGHT_MAP_OFFSET_Y", HOT_RVA, 0xE93544);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_PLAYER_STATUS_VTABLE, "RVA_NIGHT_PLAYER_STATUS_VTABLE", HOT_RVA, 0xE2B790);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_PLAYER_STATUS_COL, "RVA_NIGHT_PLAYER_STATUS_COL", HOT_RVA, 0xEB8AC0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_PLAYER_STATUS_TYPE, "RVA_NIGHT_PLAYER_STATUS_TYPE", HOT_RVA, 0x10730C0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_GIMMICK_MGR, "RVA_NIGHT_GIMMICK_MGR", HOT_RVA, 0x1104C80);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STATUS_SEARCH_BY_BASE_ID, "RVA_NIGHT_STATUS_SEARCH_BY_BASE_ID", HOT_RVA, 0x259300);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_EXACT_ANCHOR_SEARCH, "RVA_NIGHT_EXACT_ANCHOR_SEARCH", HOT_RVA, 0x1CC450);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_HASH_LOOKUP, "RVA_NIGHT_MAP_HASH_LOOKUP", HOT_RVA, 0x18E0C0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SAVE_DATA_ACCESSOR, "RVA_NIGHT_SAVE_DATA_ACCESSOR", HOT_RVA, 0x27A40);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SAVE_DATA_PTR, "RVA_NIGHT_SAVE_DATA_PTR", HOT_RVA, 0x10FCBB0);
-    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_GAME_DB_PTR, "RVA_NIGHT_GAME_DB_PTR", HOT_RVA, 0x1104C10);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_REDRAW, "RVA_NIGHT_MAP_REDRAW", HOT_RVA, 0x3016d0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INITIALIZER_CALL, "RVA_NIGHT_MAP_INITIALIZER_CALL", HOT_RVA, 0x2fd8b4);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_VECTOR_READ, "RVA_NIGHT_MAP_VECTOR_READ", HOT_RVA, 0x30173c);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_VECTOR_RANGE_LOAD, "RVA_NIGHT_MAP_VECTOR_RANGE_LOAD", HOT_RVA, 0x30174A);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_VTABLE, "RVA_NIGHT_MAP_TASK_VTABLE", HOT_RVA, 0xE5D908);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_COL, "RVA_NIGHT_MAP_TASK_COL", HOT_RVA, 0xEF9678);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_TYPE, "RVA_NIGHT_MAP_TASK_TYPE", HOT_RVA, 0x10B4690);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_TASK_INITIALIZE, "RVA_NIGHT_MAP_TASK_INITIALIZE", HOT_RVA, 0x795940);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_VTABLE, "RVA_NIGHT_MAP_STAMP_VTABLE", HOT_RVA, 0xE44D78);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_COL, "RVA_NIGHT_MAP_STAMP_COL", HOT_RVA, 0xED1BC0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_TYPE, "RVA_NIGHT_MAP_STAMP_TYPE", HOT_RVA, 0x108FED0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_DESTROY, "RVA_NIGHT_MAP_STAMP_DESTROY", HOT_RVA, 0x11E110);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_VTABLE, "RVA_NIGHT_CREATURE_VTABLE", HOT_RVA, 0xE42328);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_COL, "RVA_NIGHT_CREATURE_COL", HOT_RVA, 0xECCC00);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_TYPE, "RVA_NIGHT_CREATURE_TYPE", HOT_RVA, 0x108C270);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_DESTROY, "RVA_NIGHT_CREATURE_DESTROY", HOT_RVA, 0xEF2E4);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_VTABLE, "RVA_NIGHT_CREATURE_CALLBACK_VTABLE", HOT_RVA, 0xE592D0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_COL, "RVA_NIGHT_CREATURE_CALLBACK_COL", HOT_RVA, 0xEF1428);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_COPY, "RVA_NIGHT_CREATURE_CALLBACK_COPY", HOT_RVA, 0x296E30);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_INVOKE, "RVA_NIGHT_CREATURE_CALLBACK_INVOKE", HOT_RVA, 0x296E20);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CALLBACK_DESTROY, "RVA_NIGHT_CREATURE_CALLBACK_DESTROY", HOT_RVA, 0x1999B0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INFORMATION_VTABLE, "RVA_NIGHT_MAP_INFORMATION_VTABLE", HOT_RVA, 0xE4FEF0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INFORMATION_COL, "RVA_NIGHT_MAP_INFORMATION_COL", HOT_RVA, 0xEE35B8);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_INFORMATION_TYPE, "RVA_NIGHT_MAP_INFORMATION_TYPE", HOT_RVA, 0x109F520);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_VTABLE, "RVA_NIGHT_COM_MAP_VTABLE", HOT_RVA, 0xE4BA98);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_COL, "RVA_NIGHT_COM_MAP_COL", HOT_RVA, 0xEDD118);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_TYPE, "RVA_NIGHT_COM_MAP_TYPE", HOT_RVA, 0x109A7E8);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_SECONDARY_10, "RVA_NIGHT_COM_MAP_SECONDARY_10", HOT_RVA, 0xE4BA50);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_SECONDARY_20, "RVA_NIGHT_COM_MAP_SECONDARY_20", HOT_RVA, 0xE4BE90);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_COM_MAP_SECONDARY_248, "RVA_NIGHT_COM_MAP_SECONDARY_248", HOT_RVA, 0xE4BCA8);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_CONSTRUCTOR, "RVA_NIGHT_CREATURE_CONSTRUCTOR", HOT_RVA, 0xe9cd0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_DATA_BIND, "RVA_NIGHT_CREATURE_DATA_BIND", HOT_RVA, 0xea06e);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_ID_ACCESS, "RVA_NIGHT_CREATURE_ID_ACCESS", HOT_RVA, 0xea9bc);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_CREATURE_ID_FORMAT, "RVA_NIGHT_CREATURE_ID_FORMAT", HOT_RVA, 0xE41E38);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_SEARCH, "RVA_NIGHT_SPATIAL_SEARCH", HOT_RVA, 0x197060);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_RAW_VECTOR_FREE, "RVA_NIGHT_RAW_VECTOR_FREE", HOT_RVA, 0xbaff0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STATUS_UNIQUE_ID_GETTER, "RVA_NIGHT_STATUS_UNIQUE_ID_GETTER", HOT_RVA, 0x11c070);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STATUS_POSITION_GETTER, "RVA_NIGHT_STATUS_POSITION_GETTER", HOT_RVA, 0x11c080);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_RESOLVER, "RVA_NIGHT_MAP_AREA_RESOLVER", HOT_RVA, 0x170870);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_RESOLVER_BOUNDS, "RVA_NIGHT_MAP_AREA_RESOLVER_BOUNDS", HOT_RVA, 0x170993);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_LIVE_AREA_RESOLVER, "RVA_NIGHT_LIVE_AREA_RESOLVER", HOT_RVA, 0x1d8fd0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_PLAYER_CHAIN, "RVA_NIGHT_MAP_AREA_PLAYER_CHAIN", HOT_RVA, 0x1755b1);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_PLAYER_LIVE_CALL, "RVA_NIGHT_MAP_AREA_PLAYER_LIVE_CALL", HOT_RVA, 0x1755e6);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_PLAYER_CALL, "RVA_NIGHT_MAP_AREA_PLAYER_CALL", HOT_RVA, 0x1755fb);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_STATUS_CHAIN, "RVA_NIGHT_MAP_AREA_STATUS_CHAIN", HOT_RVA, 0xe3294);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_STATUS_LIVE_CALL, "RVA_NIGHT_MAP_AREA_STATUS_LIVE_CALL", HOT_RVA, 0xe32bb);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_AREA_STATUS_CALL, "RVA_NIGHT_MAP_AREA_STATUS_CALL", HOT_RVA, 0xe32d0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_WORLD_TO_MAP, "RVA_NIGHT_WORLD_TO_MAP", HOT_RVA, 0x2266f0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_VECTOR_ADD, "RVA_NIGHT_VECTOR_ADD", HOT_RVA, 0xe9b20);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_WORLD_TO_MAP_CALL, "RVA_NIGHT_WORLD_TO_MAP_CALL", HOT_RVA, 0x2f5f2a);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_POSITION_GETTER_CALL, "RVA_NIGHT_POSITION_GETTER_CALL", HOT_RVA, 0x2f5f14);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_VECTOR_ADD_CALL, "RVA_NIGHT_VECTOR_ADD_CALL", HOT_RVA, 0x2f5f7c);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_POSITION_COPY, "RVA_NIGHT_MAP_STAMP_POSITION_COPY", HOT_RVA, 0x301906);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_NATIVE_LIMIT, "RVA_NIGHT_MAP_STAMP_NATIVE_LIMIT", HOT_RVA, 0x3018f2);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_ALLOCATION, "RVA_NIGHT_MAP_STAMP_ALLOCATION", HOT_RVA, 0x301920);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_LAYOUT_WRITES, "RVA_NIGHT_MAP_STAMP_LAYOUT_WRITES", HOT_RVA, 0x30195f);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_ATLAS_TYPE, "RVA_NIGHT_MAP_STAMP_ATLAS_TYPE", HOT_RVA, 0x301774);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_STAMP_SELECTION, "RVA_NIGHT_MAP_STAMP_SELECTION", HOT_RVA, 0x303ba2);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_POSITION_READ, "RVA_NIGHT_STAMP_POSITION_READ", HOT_RVA, 0x3017e6);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_RENDER_ARGS, "RVA_NIGHT_STAMP_RENDER_ARGS", HOT_RVA, 0x30182e);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_RENDER_CALL, "RVA_NIGHT_STAMP_RENDER_CALL", HOT_RVA, 0x301854);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_LOOP_ADVANCE, "RVA_NIGHT_STAMP_LOOP_ADVANCE", HOT_RVA, 0x301859);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STAMP_RENDERER, "RVA_NIGHT_STAMP_RENDERER", HOT_RVA, 0x757ef0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_RENDERER_R9_OVERWRITE, "RVA_NIGHT_RENDERER_R9_OVERWRITE", HOT_RVA, 0x757f72);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_ENABLED_MEMBERSHIP_PROOF, "RVA_NIGHT_ENABLED_MEMBERSHIP_PROOF", HOT_RVA, 0x1946d2);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_OWNER_CHAIN, "RVA_NIGHT_SPATIAL_OWNER_CHAIN", HOT_RVA, 0xe2ea3);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_OWNER_LOOKUP_CALL, "RVA_NIGHT_SPATIAL_OWNER_LOOKUP_CALL", HOT_RVA, 0xe2ebf);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_OWNER_LOOKUP, "RVA_NIGHT_SPATIAL_OWNER_LOOKUP", HOT_RVA, 0x1910c0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_ADMISSION_WINDOW, "RVA_NIGHT_SPATIAL_ADMISSION_WINDOW", HOT_RVA, 0xeee46);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_ADMISSION_CALL, "RVA_NIGHT_SPATIAL_ADMISSION_CALL", HOT_RVA, 0xeee50);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_ADMISSION, "RVA_NIGHT_SPATIAL_ADMISSION", HOT_RVA, 0x190e80);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_INDEX_INSERT_WINDOW, "RVA_NIGHT_SPATIAL_INDEX_INSERT_WINDOW", HOT_RVA, 0x190edd);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_INDEX_INSERT_CALL, "RVA_NIGHT_SPATIAL_INDEX_INSERT_CALL", HOT_RVA, 0x190eef);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SPATIAL_INDEX_INSERT, "RVA_NIGHT_SPATIAL_INDEX_INSERT", HOT_RVA, 0x11d320);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MEMBERSHIP_ADMISSION_CALL, "RVA_NIGHT_MEMBERSHIP_ADMISSION_CALL", HOT_RVA, 0x194722);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_DIVISOR, "RVA_NIGHT_MAP_DIVISOR", HOT_RVA, 0xa44318);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_SCALE_ONE, "RVA_NIGHT_MAP_SCALE_ONE", HOT_RVA, 0xeae1a4);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_OFFSET_X, "RVA_NIGHT_MAP_OFFSET_X", HOT_RVA, 0xeae70c);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_OFFSET_Y, "RVA_NIGHT_MAP_OFFSET_Y", HOT_RVA, 0xeae9ac);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_PLAYER_STATUS_VTABLE, "RVA_NIGHT_PLAYER_STATUS_VTABLE", HOT_RVA, 0xE45F88);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_PLAYER_STATUS_COL, "RVA_NIGHT_PLAYER_STATUS_COL", HOT_RVA, 0xED3840);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_PLAYER_STATUS_TYPE, "RVA_NIGHT_PLAYER_STATUS_TYPE", HOT_RVA, 0x1091888);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_GIMMICK_MGR, "RVA_NIGHT_GIMMICK_MGR", HOT_RVA, 0x1124D60);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_STATUS_SEARCH_BY_BASE_ID, "RVA_NIGHT_STATUS_SEARCH_BY_BASE_ID", HOT_RVA, 0x261a00);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_EXACT_ANCHOR_SEARCH, "RVA_NIGHT_EXACT_ANCHOR_SEARCH", HOT_RVA, 0x1CF520);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_HASH_LOOKUP, "RVA_NIGHT_MAP_HASH_LOOKUP", HOT_RVA, 0x1910c0);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SAVE_DATA_ACCESSOR, "RVA_NIGHT_SAVE_DATA_ACCESSOR", HOT_RVA, 0x2A430);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_GEAR_ACCESSOR, "RVA_NIGHT_GEAR_ACCESSOR", HOT_RVA, 0x2B060);  // v1.0.61 齿轮模板容器 / v1.30 -> 0x2B060
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_MAP_FIND, "RVA_NIGHT_MAP_FIND", HOT_RVA, 0x42840);  // v1.0.63: 容器+0x58 哈希查询（齿轮 flag）
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_SAVE_DATA_PTR, "RVA_NIGHT_SAVE_DATA_PTR", HOT_RVA, 0x111cc90);
+    HotConfig_Register("monstermark", (void*)&RVA_NIGHT_GAME_DB_PTR, "RVA_NIGHT_GAME_DB_PTR", HOT_RVA, 0x1124CF0);
+}
+
+// ============================================================
+// v1.0.58: F2 快捷菜单访问器（书/齿轮显示开关）
+// 宿主（ModManager）F2 菜单拉取 QolQuickMenuItems 时调用。
+// 老鼠/宝箱怪标记不受此开关影响，始终随地图绘制。
+// ============================================================
+static bool NightBookGearIsOn() {
+    return g_nightBookGearShown.load(std::memory_order_relaxed);
+}
+
+static void NightBookGearToggle() {
+    bool next = !g_nightBookGearShown.load(std::memory_order_relaxed);
+    g_nightBookGearShown.store(next, std::memory_order_relaxed);
+    Log("[NightMapMarkers] book/gear markers %s (F2)\n",
+        next ? "shown" : "hidden");
 }

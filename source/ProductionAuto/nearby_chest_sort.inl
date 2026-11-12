@@ -182,6 +182,7 @@ using NearbyBatchDirtyFunction = void (__fastcall *)(void*, int);
 
 static std::atomic<NearbyMainUpdateFunction> g_nearbyOriginalMainUpdate{nullptr};
 static void* g_nearbyMainTrampoline = nullptr;
+static void* g_nearbyMainRelay = nullptr;  // v1.1.49: near relay for unload (H2)
 static NearbyInputActiveFunction g_nearbyInputActive = nullptr;
 static NearbyInputConsumeFunction g_nearbyInputConsume = nullptr;
 static NearbyInputEventFunction g_nearbyInputEvent = nullptr;
@@ -606,7 +607,11 @@ static bool NearbyReadRawInventoryRelaxed(void* status,
            NearbyIsReadable(output->begin, count * sizeof(void*));
 }
 
+// v1.5.85【P2 修正】原实现无空指针校验：item==nullptr 时目标地址是 0x8，
+//   InterlockedIncrement 直接访问违例 → 进程崩溃。配对的
+//   NearbyReleaseOwnedReference 有 `!item` 保护，两者防护强度不对称。
 static void NearbyAddReference(void* item) {
+    if (!item) return;
     InterlockedIncrement(reinterpret_cast<volatile LONG*>(
         reinterpret_cast<uintptr_t>(item) + sizeof(void*)));
 }
@@ -965,6 +970,7 @@ static bool NearbyFinishMainHook() {
         return false;
     }
     Log("[NearbySort] main-state hook published with aligned atomic 8-byte entry\n");
+    g_nearbyMainRelay = relay;  // v1.1.49: save for unload (H2)
     return true;
 }
 
@@ -1109,4 +1115,247 @@ static bool InstallNearbyChestSort() {
         static_cast<unsigned long long>(NEARBY_MAIN_CALLBACK_GAP_MS),
         static_cast<double>(NEARBY_SORT_RADIUS));
     return true;
+}
+
+// ============================================================
+// v1.1.45-diag: item_adjust 调用链诊断 hook（E9 rel32 安全方案，KB-061 修复版）
+// v1.1.44 事故根源：入口 5 字节内写 ff 25 指令头（14 字节指令只写 5 字节，
+// 未写入的地址位落在原函数字节上 -> 跳垃圾地址崩溃，任何物品数量变化必崩）。
+// 本版结构（与 GameClock / NearbyMain / AutoFish hook 同款成熟模板）：
+//   入口(5B):    E9 rel32 -> relay（恰好 5 字节，完整覆盖首指令 48 89 5C 24 08）
+//   relay(14B):  ff 25 00 00 00 00 + detour 绝对地址（自有缓冲，完整写入安全）
+//   trampoline: 原首指令 5B + ff 25 跳回 target+5
+// 原子性: target 8 字节对齐(0x108EB0)，InterlockedCompareExchange64 一次
+//   替换完整 8 字节（E9+rel32+原字节后 3B），比较失败则判 FAIL 不写入。
+// 开关: HotConfig productionauto 组 DIAG_ITEM_ADJUST（HOT_BOOL，默认 0）。
+//   hook 常装（detour 关闭态开销 = 一次原子读+判断），日志按热开关打印。
+//   JSON 写 1 后由 mod_tick Poll 热生效，无需重启。
+// 日志: [NearbySort][diag-itemadjust] caller=0xRVA item=... delta=...
+//       同 caller 400ms 内聚合为 "连续 xN (repeat聚合)"
+// 用途: 定位游戏原生加工机投入/取出函数（12 caller 清单对照）+
+//       观察官方 v1.20 "长按连续投入/取出" repeat 调用模式
+// ============================================================
+#include <intrin.h>  // _ReturnAddress
+
+static volatile long g_diagItemAdjustEnabled = 0;
+static void* g_diagItemAdjustTramp = nullptr;
+static void* g_diagItemAdjustRelay = nullptr;
+static unsigned char g_diagItemAdjustSaved[8] = { 0 };
+static bool g_diagItemAdjustInstalled = false;
+
+typedef void (__fastcall* NearbyItemAdjustDiagFunction)(void*, int);
+
+static void NearbyDiagItemAdjustLog(uintptr_t callerRva, void* item, int delta) {
+    static uintptr_t s_lastRva = 0;
+    static ULONGLONG s_lastTick = 0;
+    static int s_burst = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (callerRva == s_lastRva && now - s_lastTick < 400) {
+        ++s_burst;
+        s_lastTick = now;
+        return;
+    }
+    if (s_burst > 0) {
+        Log("[NearbySort][diag-itemadjust] caller=0x%llX 连续 x%d (repeat聚合)\n",
+            static_cast<unsigned long long>(s_lastRva), s_burst + 1);
+        s_burst = 0;
+    }
+    Log("[NearbySort][diag-itemadjust] caller=0x%llX item=%p delta=%d\n",
+        static_cast<unsigned long long>(callerRva), item, delta);
+    s_lastRva = callerRva;
+    s_lastTick = now;
+}
+
+static void __fastcall NearbyItemAdjustDiagDetour(void* item, int delta) {
+    if (g_diagItemAdjustEnabled) {
+        static uintptr_t s_cachedBase = 0;
+        if (!s_cachedBase) {
+            s_cachedBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        }
+        NearbyDiagItemAdjustLog(
+            reinterpret_cast<uintptr_t>(_ReturnAddress()) - s_cachedBase,
+            item, delta);
+    }
+    if (g_diagItemAdjustTramp) {
+        reinterpret_cast<NearbyItemAdjustDiagFunction>(
+            g_diagItemAdjustTramp)(item, delta);
+    }
+}
+
+static bool NearbyInstallItemAdjustDiag() {
+    static const unsigned char expected[] = SIG_NEARBY_ITEM_ADJUST;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!base) return false;
+    unsigned char* target = reinterpret_cast<unsigned char*>(
+        base + RVA_NEARBY_ITEM_ADJUST);
+    if ((reinterpret_cast<uintptr_t>(target) & 7) != 0) {
+        Log("[NearbySort][diag-itemadjust] target 未 8 字节对齐; 跳过安装\n");
+        return false;
+    }
+    if (memcmp(target, expected, sizeof(expected)) != 0) {
+        Log("[NearbySort][diag-itemadjust] item_adjust 签名校验 FAIL @0x%llX; 跳过安装\n",
+            static_cast<unsigned long long>(RVA_NEARBY_ITEM_ADJUST));
+        return false;
+    }
+    // 1) trampoline: 原首指令(5B 完整指令 48 89 5C 24 08) + ff 25 跳回 target+5
+    unsigned char* trampoline = static_cast<unsigned char*>(VirtualAlloc(
+        nullptr, 96, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    if (!trampoline) {
+        Log("[NearbySort][diag-itemadjust] trampoline 分配失败 error=%lu\n",
+            GetLastError());
+        return false;
+    }
+    memcpy(trampoline, expected, 5);
+    unsigned char jumpBack[14] = { 0xff, 0x25, 0, 0, 0, 0 };
+    *reinterpret_cast<unsigned long long*>(jumpBack + 6) =
+        reinterpret_cast<unsigned long long>(target + 5);
+    memcpy(trampoline + 5, jumpBack, sizeof(jumpBack));
+    if (!SealExecutableMemory(trampoline, 96)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        Log("[NearbySort][diag-itemadjust] trampoline seal 失败\n");
+        return false;
+    }
+    // 2) relay 近端中继(±2GB 内): 完整 ff 25 十四字节跳 detour（自有缓冲安全）
+    unsigned char* relay = static_cast<unsigned char*>(AllocateExecutableNear(
+        reinterpret_cast<uintptr_t>(target), 32));
+    if (!relay) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        Log("[NearbySort][diag-itemadjust] relay 分配失败 error=%lu\n",
+            GetLastError());
+        return false;
+    }
+    unsigned char relayCode[14] = { 0xff, 0x25, 0, 0, 0, 0 };
+    *reinterpret_cast<unsigned long long*>(relayCode + 6) =
+        reinterpret_cast<unsigned long long>(&NearbyItemAdjustDiagDetour);
+    memcpy(relay, relayCode, sizeof(relayCode));
+    if (!SealExecutableMemory(relay, 32)) {
+        VirtualFree(relay, 0, MEM_RELEASE);
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        Log("[NearbySort][diag-itemadjust] relay seal 失败\n");
+        return false;
+    }
+    // 3) 入口 E9 rel32（5 字节恰好），CAS 8 字节原子替换
+    const std::int64_t displacement =
+        reinterpret_cast<std::int64_t>(relay) -
+        static_cast<std::int64_t>(reinterpret_cast<uintptr_t>(target) + 5);
+    if (displacement < INT32_MIN || displacement > INT32_MAX) {
+        VirtualFree(relay, 0, MEM_RELEASE);
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        Log("[NearbySort][diag-itemadjust] relay 超出 rel32 范围; 跳过安装\n");
+        return false;
+    }
+    unsigned char expected8[8];
+    unsigned char hook8[8];
+    memcpy(expected8, expected, sizeof(expected8));
+    memcpy(hook8, expected8, sizeof(hook8));
+    hook8[0] = 0xe9;
+    *reinterpret_cast<std::int32_t*>(hook8 + 1) =
+        static_cast<std::int32_t>(displacement);
+    LONG64 expectedWord = 0;
+    LONG64 hookWord = 0;
+    memcpy(&expectedWord, expected8, sizeof(expectedWord));
+    memcpy(&hookWord, hook8, sizeof(hookWord));
+    memcpy(g_diagItemAdjustSaved, expected8, sizeof(g_diagItemAdjustSaved));
+
+    DWORD oldProtection = 0;
+    if (!VirtualProtect(target, sizeof(hook8), PAGE_EXECUTE_READWRITE,
+                        &oldProtection)) {
+        VirtualFree(relay, 0, MEM_RELEASE);
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        Log("[NearbySort][diag-itemadjust] target 保护切换失败\n");
+        return false;
+    }
+    const LONG64 observed = InterlockedCompareExchange64(
+        reinterpret_cast<volatile LONG64*>(target), hookWord, expectedWord);
+    DWORD ignored = 0;
+    const bool protectionRestored =
+        VirtualProtect(target, sizeof(hook8), oldProtection, &ignored) != FALSE;
+    const bool entryFlushed =
+        FlushInstructionCache(GetCurrentProcess(), target, sizeof(hook8)) != FALSE;
+    if (observed != expectedWord || memcmp(target, hook8, sizeof(hook8)) != 0 ||
+        !protectionRestored || !entryFlushed) {
+        if (observed != expectedWord) {
+            VirtualFree(relay, 0, MEM_RELEASE);
+            VirtualFree(trampoline, 0, MEM_RELEASE);
+        }
+        Log("[NearbySort][diag-itemadjust] 原子入口写入 FAILED compare=%s "
+            "readback=%s prot=%s flush=%s; 安全跳过\n",
+            observed == expectedWord ? "OK" : "FAIL",
+            memcmp(target, hook8, sizeof(hook8)) == 0 ? "OK" : "FAIL",
+            protectionRestored ? "OK" : "FAIL", entryFlushed ? "OK" : "FAIL");
+        return false;
+    }
+    g_diagItemAdjustTramp = trampoline;
+    g_diagItemAdjustRelay = relay;
+    g_diagItemAdjustInstalled = true;
+    Log("[NearbySort][diag-itemadjust] hook OK @0x%llX E9->relay=%p tramp=%p "
+        "(KB-061 安全方案, DIAG_ITEM_ADJUST 热开关控制日志)\n",
+        static_cast<unsigned long long>(RVA_NEARBY_ITEM_ADJUST), relay, trampoline);
+    return true;
+}
+
+static void NearbyRemoveItemAdjustDiag() {
+    if (!g_diagItemAdjustInstalled) return;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (base) {
+        unsigned char* target = reinterpret_cast<unsigned char*>(
+            base + RVA_NEARBY_ITEM_ADJUST);
+        LONG64 savedWord = 0;
+        memcpy(&savedWord, g_diagItemAdjustSaved, sizeof(savedWord));
+        LONG64 currentWord = 0;
+        memcpy(&currentWord, target, sizeof(currentWord));
+        DWORD protection = 0;
+        if (VirtualProtect(target, 8, PAGE_EXECUTE_READWRITE, &protection)) {
+            InterlockedCompareExchange64(
+                reinterpret_cast<volatile LONG64*>(target), savedWord, currentWord);
+            FlushInstructionCache(GetCurrentProcess(), target, 8);
+            VirtualProtect(target, 8, protection, &protection);
+        }
+    }
+    if (g_diagItemAdjustRelay) {
+        VirtualFree(g_diagItemAdjustRelay, 0, MEM_RELEASE);
+        g_diagItemAdjustRelay = nullptr;
+    }
+    if (g_diagItemAdjustTramp) {
+        VirtualFree(g_diagItemAdjustTramp, 0, MEM_RELEASE);
+        g_diagItemAdjustTramp = nullptr;
+    }
+    g_diagItemAdjustInstalled = false;
+    Log("[NearbySort][diag-itemadjust] hook removed\n");
+}
+
+// v1.1.49: NearbyMainUpdate hook 还原（H2 修复）
+// 参照 NearbyRemoveItemAdjustDiag 模式：CAS 还原原始 8 字节 → 释放 relay + trampoline。
+// 原始字节 = SIG_NEARBY_MAIN_UPDATE 前 8 字节（hook 安装时用 CAS 替换的正是这 8 字节）。
+static void NearbyRemoveMainHook() {
+    if (!g_nearbyMainTrampoline) return;  // hook 未安装
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (base) {
+        unsigned char* target = reinterpret_cast<unsigned char*>(
+            base + RVA_NEARBY_MAIN_UPDATE);
+        unsigned char expected[] = SIG_NEARBY_MAIN_UPDATE;
+        LONG64 expectedWord = 0;
+        memcpy(&expectedWord, expected, sizeof(expectedWord));
+        LONG64 currentWord = 0;
+        memcpy(&currentWord, target, sizeof(currentWord));
+        DWORD protection = 0;
+        if (VirtualProtect(target, 8, PAGE_EXECUTE_READWRITE, &protection)) {
+            InterlockedCompareExchange64(
+                reinterpret_cast<volatile LONG64*>(target),
+                expectedWord, currentWord);
+            FlushInstructionCache(GetCurrentProcess(), target, 8);
+            VirtualProtect(target, 8, protection, &protection);
+        }
+    }
+    g_nearbyOriginalMainUpdate.store(nullptr, std::memory_order_release);
+    if (g_nearbyMainRelay) {
+        VirtualFree(g_nearbyMainRelay, 0, MEM_RELEASE);
+        g_nearbyMainRelay = nullptr;
+    }
+    if (g_nearbyMainTrampoline) {
+        VirtualFree(g_nearbyMainTrampoline, 0, MEM_RELEASE);
+        g_nearbyMainTrampoline = nullptr;
+    }
+    g_nearbySortReady.store(false, std::memory_order_release);
+    Log("[NearbySort] main-state hook removed\n");
 }

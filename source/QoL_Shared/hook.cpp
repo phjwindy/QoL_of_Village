@@ -3,7 +3,12 @@
 //   *out_orig 指向跳板：先执行原函数前5字节，再跳回 target+5，可多次调用原函数。
 // 注意：需要 target 前 5 字节长度内不存在跨指令边界问题，且原函数可安全重入。
 // v2: trampoline RIP-relative 重定位 + HookRemoveEx 带字节还原。
+// v3: relay 近距离跳板解决 >2GB 距离（见 AllocNear 注释）。
+// v4: 两处 RWX 分配都向 QoL_crash\trampolines.txt 登记归属——
+//     崩溃时若 RIP 落在"不属于任何模块"的地址，crash_dump.h v24 能据此
+//     直接指认「这是哪个 MOD 的钩子跳板」，而不是让你猜。
 #include "hook.h"
+#include "crash_dump.h"
 #include <windows.h>
 #include <cstring>
 #include <cstdint>
@@ -89,55 +94,98 @@ static bool RelocateRipRelative(uint8_t* code, uintptr_t oldRip, uintptr_t newRi
     return true;  // 无 RIP-relative 指令，无需修正
 }
 
+// ---- v3：远端 DLL 安全的安装方式 ----
+// 旧版直接 E9 rel32 跳到 detour，但插件 DLL 与 exe 常相距 >2GB（实测 11.6GB）
+// → MakeRel32 失败 → 全部 hook 安装失败（探针 push=0 pop=0 collect=0 的根因）。
+// 现在：在 target ±2GB 内分配一段 relay，relay 里用 mov rax,imm64; jmp rax
+// 绝对跳转到 detour；target 只 E9 到 relay（距离必然达标）。
+static uintptr_t AllocNear(uintptr_t target, size_t size) {
+    SYSTEM_INFO si = {};
+    GetSystemInfo(&si);
+    const uintptr_t gran = si.dwAllocationGranularity ? si.dwAllocationGranularity : 0x10000;
+    uintptr_t base = target & ~(gran - 1);
+    for (int64_t step = gran; step < 0x70000000LL; step += gran) {
+        uintptr_t up = base + (uintptr_t)step;
+        void* p = VirtualAlloc((void*)up, size, MEM_COMMIT | MEM_RESERVE,
+                               PAGE_EXECUTE_READWRITE);
+        if (p) {
+            const intptr_t d = (intptr_t)p - (intptr_t)target;
+            if (d > INT32_MIN && d < INT32_MAX) return (uintptr_t)p;
+            VirtualFree(p, 0, MEM_RELEASE);
+        }
+        if (base > (uintptr_t)step) {
+            uintptr_t down = base - (uintptr_t)step;
+            p = VirtualAlloc((void*)down, size, MEM_COMMIT | MEM_RESERVE,
+                             PAGE_EXECUTE_READWRITE);
+            if (p) {
+                const intptr_t d = (intptr_t)p - (intptr_t)target;
+                if (d > INT32_MIN && d < INT32_MAX) return (uintptr_t)p;
+                VirtualFree(p, 0, MEM_RELEASE);
+            }
+        }
+    }
+    return 0;
+}
+
 bool HookInstall(uintptr_t target, uintptr_t detour, uintptr_t* out_orig) {
     if (!target || !detour || !out_orig) return false;
 
-    // 1) 分配可执行跳板页
-    JmpAbs* tramp = (JmpAbs*)VirtualAlloc(nullptr, sizeof(JmpAbs),
-                                          MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    // 1) 跳板：5 字节原指令 + mov rax,target+5; jmp rax（绝对回跳，不依赖距离）
+    uint8_t* tramp = (uint8_t*)VirtualAlloc(nullptr, 64,
+                                            MEM_COMMIT | MEM_RESERVE,
+                                            PAGE_EXECUTE_READWRITE);
     if (!tramp) return false;
-
-    // 2) 跳板 = 原函数前 5 字节 + jmp target+5（用于安全调用原函数）
-    uint8_t* tbytes = (uint8_t*)tramp;
-    memcpy(tbytes, (void*)target, 5);
-
-    // v2: 重定位 RIP-relative 指令（如果有）
-    // oldRip = target（原指令地址），newRip = (uintptr_t)tramp（跳板地址）
-    if (!RelocateRipRelative(tbytes, target, (uintptr_t)tramp)) {
+    memcpy(tramp, (void*)target, 5);
+    if (!RelocateRipRelative(tramp, target, (uintptr_t)tramp)) {
         VirtualFree(tramp, 0, MEM_RELEASE);
         return false;
     }
+    tramp[5] = 0x48; tramp[6] = 0xB8;                 // mov rax, imm64
+    *(uintptr_t*)(tramp + 7) = target + 5;
+    tramp[15] = 0xFF; tramp[16] = 0xE0;               // jmp rax
+    FlushInstructionCache(GetCurrentProcess(), tramp, 17);
+    // ★ 归属登记：崩溃取证用（owner 由 probe 地址反查本 DLL 得到）
+    qol::detail::QolRegisterTrampoline((void*)&HookInstall, tramp, 64,
+                                       "HookInstall-tramp", target + 5);
 
-    JmpRel32* back = (JmpRel32*)(tbytes + 5);
-    // 跳板回跳：rel32 溢出则释放跳板页并失败（避免生成错误地址）
-    if (!MakeRel32((uintptr_t)(back + 1), target + 5, &back->rel32)) {
+    // 2) relay：target 附近，mov rax,detour; jmp rax
+    uintptr_t relay = AllocNear(target, 64);
+    if (!relay) {
         VirtualFree(tramp, 0, MEM_RELEASE);
         return false;
     }
-    FlushInstructionCache(GetCurrentProcess(), tramp, sizeof(JmpAbs));
+    uint8_t* r = (uint8_t*)relay;
+    r[0] = 0x48; r[1] = 0xB8;
+    *(uintptr_t*)(r + 2) = detour;
+    r[10] = 0xFF; r[11] = 0xE0;
+    FlushInstructionCache(GetCurrentProcess(), r, 12);
+    // ★ 归属登记：relay 的跳转目标就是 detour（位于本 MOD 的 DLL 内），
+    //   这条记录把"野执行地址"与"具体 MOD 的 detour"绑定起来。
+    qol::detail::QolRegisterTrampoline((void*)&HookInstall, (void*)relay, 64,
+                                       "HookInstall-relay", detour);
 
-    // 3) 改写 target 前 5 字节为 jmp detour（用绝对跳板更稳妥：mov rax,detour; jmp rax）
-    //    这里用 0xE9 rel32 直接跳（detour 与 target 距离须在 ±2GB 内，通常满足）
+    // 3) target: E9 rel32 -> relay
+    int32_t rel = 0;
+    if (!MakeRel32(target + 5, relay, &rel)) {
+        VirtualFree((void*)relay, 0, MEM_RELEASE);
+        VirtualFree(tramp, 0, MEM_RELEASE);
+        return false;
+    }
     DWORD old = 0;
     if (!VirtualProtect((void*)target, 5, PAGE_EXECUTE_READWRITE, &old)) {
+        VirtualFree((void*)relay, 0, MEM_RELEASE);
         VirtualFree(tramp, 0, MEM_RELEASE);
         return false;
     }
-    JmpRel32 patch;
-    // 主 hook 跳转：detour(DLL) 与 target(exe) 距离可能超 ±2GB，溢出则失败而非截断
-    if (!MakeRel32(target + 5, detour, &patch.rel32)) {
-        VirtualProtect((void*)target, 5, old, &old); // 还原页权限后释放跳板
-        VirtualFree(tramp, 0, MEM_RELEASE);
-        return false;
-    }
-    memcpy((void*)target, &patch, 5);
+    uint8_t patch[5] = {0xE9, 0, 0, 0, 0};
+    memcpy(patch + 1, &rel, 4);
+    memcpy((void*)target, patch, 5);
     VirtualProtect((void*)target, 5, old, &old);
     FlushInstructionCache(GetCurrentProcess(), (void*)target, 5);
 
-    *out_orig = (uintptr_t)tramp; // 调用方通过此指针调用原函数
+    *out_orig = (uintptr_t)tramp;
     return true;
 }
-
 // v2: 带原始字节和跳板指针的完整卸载
 bool HookRemoveEx(uintptr_t target, const uint8_t* savedBytes, uintptr_t tramp) {
     if (!target || !savedBytes) return false;

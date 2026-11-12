@@ -14,10 +14,11 @@
 // 钓鱼状态机（CState_Player_FishingRod::update）8 个 Phase：
 //   0=待命/重抛  4=钓到鱼/收线动画  6=成功展示  7=玩家取消/收竿
 //
-// 补丁点（build 25311578 / v1.20）：
-//   minigame_settle_gate  RVA 0x392BAD  0F 84 81 01 00 00 -> 6 NOP
-//   note_hit_check       RVA 0x392BE4  0F 85 77 01 00 00 -> 6 NOP
-//   auto_reel_in         RVA 0x218DEE  74 1D               -> 2 NOP
+// 补丁点（build 25640656）：
+//   minigame_settle_gate  RVA 0x3a75fd  0F 84 81 01 00 00 -> 6 NOP
+//   note_hit_check       RVA 0x3a7634  0F 85 77 01 00 00 -> 6 NOP
+//   auto_reel_in         RVA 0x21bede  74 1D               -> 2 NOP
+//   （2026-10-28 迁移：g_fishingPoints 裸字面量被迁移工具漏掉，旧值 0x392BAD/0x392BE4/0x218DEE 在新 exe 字节门 FAIL）
 //
 // 代码注入点（build 25311578 / v1.20）：
 //   common_exit          RVA 0x219F46  Phase 6/7 公共退出点
@@ -42,28 +43,25 @@
 // 左上角 HUD 仅在按键切换时显示，5 秒后消退（自动检测状态变化不弹窗）。
 
 #include <windows.h>
+#include "obs.h"              // v1.6.x: 统一观测层（AI 可读寄存器 + toast）
 #include <cstdint>
 #include <atomic>
 
 #include "logging.h"
+#include "exe_guard.h"   // v-local: 统一游戏版本闸门
 #include "game_window.h"   // HUD owner 绑定游戏窗口
 #include "budget.h"        // P0 帧耗时探针（跨 DLL 共享）
 #include "state.h"         // P1-2 状态感知暂停（载入/菜单静默）
 #include "hot_config.h"
+#include "selftest.h"   // 结构化自检上报（QoL_selftest_autofish.json）
 #include "quickmenu.h"
 #include "memory_cache.h"
 #include "patch_safety.h"  // v1.4.1: FastRegion 区域缓存
 
 // 日志开关：发布版禁用日志输出
 // 调试时取消注释下行即可开启日志
-// #define AUTOFISH_LOGGING
-#ifdef AUTOFISH_LOGGING
-#else
-  #define LogOpen(x)  ((void)0)
-  #define Log(...)    ((void)0)
-  #define LogV(...)   ((void)0)
-  #define LogClose()  ((void)0)
-#endif
+// 日志运行时开关（2026-10-24）：编译期宏 AUTOFISH_LOGGING 退役，改由 QoL_Shared 运行时门控。
+// 开启方式：游戏根 qol_log.cfg 写 level=1（约 1s 生效，免重编免重启）；缺省/level=0 为静默。
 
 using u64 = std::uint64_t;
 using u32 = std::uint32_t;
@@ -81,9 +79,9 @@ struct PatchPoint {
 };
 
 static PatchPoint g_fishingPoints[3] = {
-    { 0x392BAD, 6, { 0x0F, 0x84, 0x81, 0x01, 0x00, 0x00 }, "minigame settle-gate" },
-    { 0x392BE4, 6, { 0x0F, 0x85, 0x77, 0x01, 0x00, 0x00 }, "note-hit check"      },
-    { 0x218DEE, 2, { 0x74, 0x1D },                         "auto reel-in"         },
+    { 0x3a75fd, 6, { 0x0F, 0x84, 0x81, 0x01, 0x00, 0x00 }, "minigame settle-gate" },
+    { 0x3a7634, 6, { 0x0F, 0x85, 0x77, 0x01, 0x00, 0x00 }, "note-hit check"      },
+    { 0x21bede, 2, { 0x74, 0x1D },                         "auto reel-in"         },
 };
 
 static const unsigned char kNops[8] = {
@@ -91,42 +89,50 @@ static const unsigned char kNops[8] = {
 };
 
 // ---- 代码注入 RVA ----
-static volatile uintptr_t RVA_FISHING_COMMON_EXIT          = 0x219F46;
-static volatile uintptr_t RVA_FISHING_COMMON_EXIT_CONTINUE  = 0x219F4D;
-static volatile uintptr_t RVA_FISHING_UPDATE_EPILOGUE       = 0x219FC1;
+// 2026-10-28 修正（25640656）：原 0x21D336 处是 `8B 0D A0 7F C2 00 89 8D`
+//   （mov ecx,[rip+..]; mov [rbp+3D8h],ecx），与旧 build 0x219F46 的
+//   `48 8B 05 <disp> 48 8B 88 08 02`（mov rax,[rip+..]; mov rcx,[rax+208h]）
+//   完全不是同一指令 → loop-signature 报 common_exit=FAILED → 钩子链不完整
+//   → SetFishing 拒绝启用（实测 16:45:58 "required hook chain incomplete"）。
+//   按 Δ+0x30F0（与 success_gate/cancel_request/phase4_finish/no_trash 同基准）
+//   定位到 0x21D036：`48 8B 05 53 FC EF 00 48 8B 88 08 02`，与旧值仅 rip-rel
+//   位移不同，后 5 字节完全一致 —— 唯一正确候选。
+static volatile uintptr_t RVA_FISHING_COMMON_EXIT          = 0x21D036;
+static volatile uintptr_t RVA_FISHING_COMMON_EXIT_CONTINUE  = 0x21D03D;
+static volatile uintptr_t RVA_FISHING_UPDATE_EPILOGUE       = 0x21D0B1;
 
-static volatile uintptr_t RVA_FISHING_SUCCESS_COMPLETION_GATE = 0x219DF7;
-static volatile uintptr_t RVA_FISHING_SUCCESS_GATE_CONTINUE   = 0x219DFE;
+static volatile uintptr_t RVA_FISHING_SUCCESS_COMPLETION_GATE = 0x21CEE7;
+static volatile uintptr_t RVA_FISHING_SUCCESS_GATE_CONTINUE   = 0x21CEEE;
 
-static volatile uintptr_t RVA_FISHING_CANCEL_REQUEST         = 0x218963;
-static volatile uintptr_t RVA_FISHING_CANCEL_REQUEST_CONTINUE = 0x21896E;
+static volatile uintptr_t RVA_FISHING_CANCEL_REQUEST         = 0x21BA53;
+static volatile uintptr_t RVA_FISHING_CANCEL_REQUEST_CONTINUE = 0x21BA5E;
 
-static volatile uintptr_t RVA_FISHING_PHASE4_FINISH          = 0x219C75;
-static volatile uintptr_t RVA_FISHING_PHASE4_CLEANUP         = 0x219C7E;
-static volatile uintptr_t RVA_FISHING_PHASE4_NATIVE_CONTINUE = 0x219C7D;
-static volatile uintptr_t RVA_FISHING_NATIVE_ACTION_FINISH   = 0x211DE0;
+static volatile uintptr_t RVA_FISHING_PHASE4_FINISH          = 0x21CD65;
+static volatile uintptr_t RVA_FISHING_PHASE4_CLEANUP         = 0x21CD6E;
+static volatile uintptr_t RVA_FISHING_PHASE4_NATIVE_CONTINUE = 0x21CD6D;
+static volatile uintptr_t RVA_FISHING_NATIVE_ACTION_FINISH   = 0x214F10;
 
 // v1.20: vtable RVA 通过 RTTI 链定位（.?AVCState_Player_FishingRod@@），槽位镜像 64/64 字节验证
-static volatile uintptr_t RVA_FISHING_VTABLE          = 0xE387F8; // v1.5.3: v1.20 RTTI 定位
-static volatile uintptr_t RVA_FISHING_GAME_ROOT_SLOT  = 0x10FCBB0;
+static volatile uintptr_t RVA_FISHING_VTABLE          = 0xE53230; // v1.5.3: v1.20 RTTI 定位
+static volatile uintptr_t RVA_FISHING_GAME_ROOT_SLOT = 0x111cc90;
 
 // v1.20: save_data vtable = CSaveData vtable 已知映射（0xE0B3D8 -> 0xE2D838）
 //         保留 warn-only 模式，不影响钓鱼功能（仅时钟读取用）
-static volatile uintptr_t RVA_FISHING_SAVE_DATA_VTABLE = 0xE2D838; // v1.5.3: v1.20 已知映射，非钓鱼路径
+static volatile uintptr_t RVA_FISHING_SAVE_DATA_VTABLE = 0xE48230; // v1.5.3: v1.20 已知映射，非钓鱼路径
 
-static volatile uintptr_t RVA_FISHING_MONITOR_TARGET  = 0x218430;
+static volatile uintptr_t RVA_FISHING_MONITOR_TARGET  = 0x21B520;
 // ---- InstallFishingLoopHook 内部验证用 RVA（移至文件作用域以支持 HotConfig 注册）----
-static volatile uintptr_t RVA_SUCCESS_EXIT_JUMP   = 0x219E50;
-static volatile uintptr_t RVA_DIRECT_NULL_EXIT    = 0x219E01;
-static volatile uintptr_t RVA_STATE_DISPATCH       = 0x218480;
-static volatile uintptr_t RVA_SUCCESS_PHASE        = 0x219154;
+static volatile uintptr_t RVA_SUCCESS_EXIT_JUMP   = 0x21CF40;
+static volatile uintptr_t RVA_DIRECT_NULL_EXIT    = 0x21CEF1;
+static volatile uintptr_t RVA_STATE_DISPATCH       = 0x21B570;
+static volatile uintptr_t RVA_SUCCESS_PHASE        = 0x21C244;
 
 // ---- 垃圾排除 ----
 // Hook 点在钓鱼 update 函数内部（update RVA + 0x2C95，v1.20）
 // 5 字节 anchor: test r15d, r15d; jle +0x4C
-static volatile uintptr_t RVA_NO_TRASH_HOOK = 0x21B0C5;
-static volatile uintptr_t RVA_NO_TRASH_CONTINUE = 0x21B0CA;   // hook + 5（非垃圾路径跳回点）
-static volatile uintptr_t RVA_NO_TRASH_SKIP_TARGET = 0x21B116; // hook + 5 + 0x4C（垃圾路径跳过点）
+static volatile uintptr_t RVA_NO_TRASH_HOOK = 0x21E1B5;
+static volatile uintptr_t RVA_NO_TRASH_CONTINUE = 0x21E1BA;   // hook + 5（非垃圾路径跳回点）
+static volatile uintptr_t RVA_NO_TRASH_SKIP_TARGET = 0x21E206; // hook + 5 + 0x4C（垃圾路径跳过点）
 static const unsigned char NO_TRASH_ANCHOR[5] = {
     0x45, 0x85, 0xFF, 0x7E, 0x4C  // test r15d, r15d; jle +0x4C
 };
@@ -188,7 +194,7 @@ static std::atomic<u32> g_noTrashSkipCount{0};     // 跳过计数
 // 由于 stub 在 mod_init 时构建，地址固定，生命周期与 DLL 相同
 
 // 循环计数
-static std::atomic<u64> g_fishingLoopCount{0};
+static std::atomic<u64> g_fishingLoopCount{0};  // v1.6.0: 保留计数器（HUD/统计用，rearm 计数改用 g_fishingRearmCycle）
 
 // 取消请求记录（线程局部）
 static thread_local void* g_fishingCancelRequestedState = nullptr;
@@ -208,6 +214,13 @@ static std::atomic<ULONGLONG> g_lastMonitorTick{0};          // Monitor 最后�
 static bool                   g_fishingInitFailed = false;   // hook 安装失败（不重试）
 static constexpr ULONGLONG    MONITOR_FISHING_TIMEOUT    = 1000; // <1s = 钓鱼中
 static constexpr ULONGLONG    MONITOR_NOTFISHING_TIMEOUT = 2000; // >2s = 已停止
+
+// v1.6.0 AF-H1 修复：延迟一帧重抛。
+// 旧版在 common_exit/phase4 hook 内直接写字段并跳过原生收尾链
+// （action_finish + batch 刷新等 5 个 call）——死档红线。
+// 新机制：helper 只记录 pending（返回 false 走完整原生收尾），
+// 下一帧钓鱼 update 时由 monitor 应用字段重抛——原生链零跳过。
+static std::atomic<u64> g_fishingRearmCycle{0};
 
 // ============================================================
 // 内存工具
@@ -327,6 +340,7 @@ static bool __fastcall ObserveFishingSuccessGate(void* state) {
 }
 
 // 公共退出点：检测成功退出后重置状态并重新抛竿
+
 static bool __fastcall RearmFishingAtCommonExit(void* state) {
     if (!g_fishingEnabled.load(std::memory_order_relaxed)) return false;
     uintptr_t object = 0, vtable = 0;
@@ -367,14 +381,14 @@ static bool __fastcall RearmFishingAtCommonExit(void* state) {
         return false;
     }
 
-    // 钓后动画已完成，无主动取消请求 -> 重置状态并重新抛竿
+    // v1.6.8: 复刻旧版实证机制——REQ=0 三件套 + 跳过 action_finish（对象存活续跑）
     *reinterpret_cast<u32*>(object + FISHING_REQUESTED_PHASE_OFFSET) = 0;
     *reinterpret_cast<unsigned char*>(object + FISHING_SPECIAL_RESULT_OFFSET) = 0;
     *reinterpret_cast<u64*>(object + FISHING_WAIT_TICKS_OFFSET) = 0;
-    const u64 cycle = g_fishingLoopCount.fetch_add(1, std::memory_order_relaxed) + 1;
-    Log("[AutoFish] stage=loop rearmed cycle=%llu animation_complete=1 "
-        "requested=0 observed_current=%u observed_requested=%u task=null\n",
-        static_cast<unsigned long long>(cycle), currentPhase, requestedPhase);
+    const u64 cycle = g_fishingRearmCycle.fetch_add(1, std::memory_order_relaxed) + 1;
+    Log("[AutoFish] stage=loop rearmed cycle=%llu source=common-exit "
+        "requested=0 (native action finish skipped, legacy recast)\n",
+        static_cast<unsigned long long>(cycle));
     return true;
 }
 
@@ -410,14 +424,20 @@ static bool __fastcall RearmFishingAfterCatchAnimation(void* state) {
         return false;
     }
 
+    // v1.6.8: 完全复刻旧版实证机制——写 REQ=0/SPEC=0/WAIT=0 三件套并跳过
+    // action_finish（对象存活），CUR 保持 4 让游戏自身续抛流程接管。
+    // （v1.6.6 用 REQ=1+advance 直接推 CUR=1 会因 task=null 卡死 phase1；
+    //  旧版 REQ=0 让 phase4 重入，由游戏原生路径重建 task 并续抛——实证有效）
+    g_fishingCancelRequestedState = nullptr;
     *reinterpret_cast<u32*>(object + FISHING_REQUESTED_PHASE_OFFSET) = 0;
     *reinterpret_cast<unsigned char*>(object + FISHING_SPECIAL_RESULT_OFFSET) = 0;
     *reinterpret_cast<u64*>(object + FISHING_WAIT_TICKS_OFFSET) = 0;
-    g_fishingCancelRequestedState = nullptr;
-    const u64 cycle = g_fishingLoopCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    const u64 cycle = g_fishingRearmCycle.fetch_add(1, std::memory_order_relaxed) + 1;
     Log("[AutoFish] stage=loop rearmed cycle=%llu source=phase4-animation-finish "
-        "current=4 requested=0 task=null; native action finish skipped\n",
+        "requested=0 (native action finish skipped, legacy recast)\n",
         static_cast<unsigned long long>(cycle));
+    // 死档评估（2026-10-09 用户确认）：仅睡觉存档，连竿中不存档 → 风险不暴露；
+    // 后续任务：hook 睡觉存档点补一次原生 action_finish 清理残留。
     return true;
 }
 
@@ -489,8 +509,11 @@ static bool InstallFishingLoopHook() {
     static const unsigned char expectedSuccessGate[7] = {
         0x49, 0x8B, 0x8E, 0x90, 0x02, 0x00, 0x00
     };
+    // 2026-10-28 修正：原数组声明 [7] 却只给 6 个初始值 → 第 7 字节隐式 0x00，
+    //   与实际 0x89 不符，即使地址正确也会 memcmp 失败。现按 0x21D036 实读重捕，
+    //   7 字节完整给出（含本 build 的 rip-rel 位移 53 FC EF 00）。
     static const unsigned char expectedCommonExit[7] = {
-        0x48, 0x8B, 0x05, 0x63, 0x2C, 0xEE, 0x00
+        0x48, 0x8B, 0x05, 0x53, 0xFC, 0xEF, 0x00
     };
     static const unsigned char expectedCancelPhase[11] = {
         0x41, 0xC7, 0x86, 0xDC, 0x01, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00
@@ -538,6 +561,17 @@ static bool InstallFishingLoopHook() {
         directNullOk ? "OK" : "FAILED", commonExitOk ? "OK" : "FAILED",
         dispatchOk ? "OK" : "FAILED",
         successPhaseOk ? "OK" : "FAILED", cancelOk ? "OK" : "FAILED");
+
+    // 结构化自检：结果落 QoL_selftest_autofish.json（无需人肉 grep 日志）
+    qol::SelfTest::Begin("autofish");
+    qol::SelfTest::Add("success_jump", successJumpOk, "RVA_SUCCESS_EXIT_JUMP");
+    qol::SelfTest::Add("success_gate", successGateOk, "successGate");
+    qol::SelfTest::Add("direct_null_exit", directNullOk, "RVA_DIRECT_NULL_EXIT");
+    qol::SelfTest::Add("common_exit", commonExitOk, "RVA_FISHING_COMMON_EXIT");
+    qol::SelfTest::Add("dispatch", dispatchOk, "RVA_STATE_DISPATCH");
+    qol::SelfTest::Add("success_phase", successPhaseOk, "RVA_SUCCESS_PHASE");
+    qol::SelfTest::Add("cancel_phase", cancelOk, "RVA_FISHING_CANCEL_REQUEST");
+    qol::SelfTest::Flush();
 
     if (!successJumpOk || !successGateOk || !directNullOk || !commonExitOk ||
         !dispatchOk || !successPhaseOk || !cancelOk) {
@@ -743,7 +777,7 @@ static bool InstallFishingPostCatchHook() {
         base + RVA_FISHING_PHASE4_FINISH);
 
     static const unsigned char expected[8] = {
-        0x49, 0x8B, 0xCE, 0xE8, 0x63, 0x81, 0xFF, 0xFF
+        0x49, 0x8B, 0xCE, 0xE8, 0xA3, 0x81, 0xFF, 0xFF
     };
     if (memcmp(target, expected, sizeof(expected)) != 0) {
         Log("[AutoFish] stage=post-catch-hook signature FAILED\n");
@@ -834,8 +868,8 @@ static bool __fastcall FishingUpdateMonitorDetour(void* state, void* frameContex
     // state-before 日志（仅状态变化时打印）
     if (beforeReadable &&
         (state != g_lastFishingMonitorState ||
-         beforeCurrent != g_lastFishingMonitorCurrent ||
-         beforeRequested != g_lastFishingMonitorRequested)) {
+          beforeCurrent != g_lastFishingMonitorCurrent ||
+          beforeRequested != g_lastFishingMonitorRequested)) {
         Log("[AutoFish] stage=state-before object=%p current=%u requested=%u "
             "valid_spot=%d task=%p\n", state, beforeCurrent, beforeRequested,
             beforeValid ? 1 : 0, beforeTask);
@@ -1203,6 +1237,142 @@ static int g_hudState = -1;      // 0=关闭, 1=开启, 2=待机（自动钓鱼�
 static int g_hudNoTrashState = -1; // 0=关闭, 1=开启（垃圾排除）
 static ULONGLONG g_hudHideAt = 0;
 
+// v1.6.x【HUD 抗闪烁】离屏 DIB 双缓冲：渲染到内存 DC 后用 UpdateLayeredWindow 一次性提交，
+// 取代 BeginPaint 直绘，消除分层窗口 GDI 重绘闪烁（与 ModManager v1.2.24 同方案）。
+static HDC     g_afMemDC  = nullptr;
+static HBITMAP g_afMemBmp = nullptr;
+static HBITMAP g_afOldBmp = nullptr;  // 内存 DC 初始 1x1 位图，删 DIB 前换回
+static int     g_afBufW   = 0, g_afBufH = 0;
+static void AfEnsureBuffer(int w, int h) {
+    if (g_afMemDC && g_afBufW == w && g_afBufH == h) return;
+    if (g_afMemBmp) {
+        if (g_afOldBmp) { SelectObject(g_afMemDC, g_afOldBmp); g_afOldBmp = nullptr; }
+        DeleteObject(g_afMemBmp); g_afMemBmp = nullptr;
+    }
+    if (!g_afMemDC) {
+        g_afMemDC = CreateCompatibleDC(nullptr);
+        g_afOldBmp = (HBITMAP)GetCurrentObject(g_afMemDC, OBJ_BITMAP);
+    }
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth       = w;
+    bmi.bmiHeader.biHeight      = -h;   // top-down
+    bmi.bmiHeader.biPlanes      = 1;
+    bmi.bmiHeader.biBitCount    = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    g_afMemBmp = CreateDIBSection(g_afMemDC, &bmi, DIB_RGB_COLORS, nullptr, nullptr, 0);
+    if (g_afMemBmp) {
+        SelectObject(g_afMemDC, g_afMemBmp);
+        g_afBufW = w; g_afBufH = h;
+    }
+}
+static void AfFreeBuffer() {
+    if (g_afMemBmp) {
+        if (g_afOldBmp) { SelectObject(g_afMemDC, g_afOldBmp); g_afOldBmp = nullptr; }
+        DeleteObject(g_afMemBmp); g_afMemBmp = nullptr;
+    }
+    if (g_afMemDC)  { DeleteDC(g_afMemDC); g_afMemDC = nullptr; }
+    g_afBufW = g_afBufH = 0;
+}
+// 把整张 HUD 绘制到给定 DC（原 WM_PAINT 绘制体，参数化 w/h 复用离屏缓冲）
+static void AfRender(HDC dc, int w, int h) {
+    RECT client = { 0, 0, w, h };
+    HBRUSH bg = CreateSolidBrush(RGB(28, 30, 34));
+    FillRect(dc, &client, bg);
+    DeleteObject(bg);
+
+    COLORREF accent;
+    const int state = g_hudState;
+    if (state == 1) accent = RGB(64, 160, 224);    // 蓝色=自动钓鱼
+    else if (state == 2) accent = RGB(200, 170, 60); // 黄色=待机
+    else accent = RGB(120, 130, 140);              // 灰色=关闭
+    RECT bar = client;
+    bar.right = bar.left + 6;
+    HBRUSH accentBrush = CreateSolidBrush(accent);
+    FillRect(dc, &bar, accentBrush);
+    DeleteObject(accentBrush);
+
+    SetBkMode(dc, TRANSPARENT);
+
+    // 标题
+    SetTextColor(dc, RGB(150, 150, 155));
+    HFONT oldFont = (HFONT)SelectObject(dc, g_hudFontSmall);
+    RECT titleRect = client;
+    titleRect.left += 22;
+    titleRect.right -= 14;
+    titleRect.bottom = titleRect.top + 22;
+    DrawTextW(dc, L"\x81EA\x52A8\x9493\x9C7C", -1, &titleRect,  // 自动钓鱼
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    // 状态文字
+    const wchar_t* stateText;
+    COLORREF stateColor;
+    if (state == 1) {
+        stateText = L"\x5F00\x542F";  // 开启
+        stateColor = RGB(100, 200, 240);
+    } else if (state == 2) {
+        stateText = L"\x5F85\x673A";  // 待机
+        stateColor = RGB(220, 190, 100);
+    } else {
+        stateText = L"\x5173\x95ED";  // 关闭
+        stateColor = RGB(200, 200, 210);
+    }
+    SelectObject(dc, g_hudFont);
+    SetTextColor(dc, stateColor);
+    RECT stateRect = client;
+    stateRect.left += 22;
+    stateRect.right -= 14;
+    stateRect.top += 22;
+    stateRect.bottom = stateRect.top + 32;  // 限定高度，避免 VCENTER 居中过低
+    DrawTextW(dc, stateText, -1, &stateRect,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    // 垃圾排除状态行
+    const int ntState = g_hudNoTrashState;
+    if (ntState >= 0) {
+        const wchar_t* ntText;
+        COLORREF ntColor;
+        if (ntState == 1) {
+            ntText = L"\x5783\x573E\x6392\x9664: \x5F00\x542F";  // 垃圾排除: 开启
+            ntColor = RGB(120, 220, 120);  // 绿色
+        } else {
+            ntText = L"\x5783\x573E\x6392\x9664: \x5173\x95ED";  // 垃圾排除: 关闭
+            ntColor = RGB(160, 160, 170);
+        }
+        SetTextColor(dc, ntColor);
+        RECT ntRect = client;
+        ntRect.left += 22;
+        ntRect.right -= 14;
+        ntRect.top += 58;
+        ntRect.bottom = ntRect.top + 30;  // 限定高度
+        DrawTextW(dc, ntText, -1, &ntRect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    SelectObject(dc, oldFont);
+}
+// 离屏缓冲渲染 + BitBlt 一次性提交（不再用 ULW）
+static void AfRedraw() {
+    if (!g_hudWindow) return;
+    RECT rc; GetClientRect(g_hudWindow, &rc);
+    int w = rc.right, h = rc.bottom;
+    AfEnsureBuffer(w, h);
+    if (!g_afMemDC) return;
+    AfRender(g_afMemDC, w, h);
+    // v1.6.12（2026-11-01）【可见性修复·KB-112】放弃 UpdateLayeredWindow，
+    //   改走「窗口 DC 一次 BitBlt」。依据是同机对照实验：用
+    //   SetLayeredWindowAttributes(LWA_ALPHA) 的 HUD（Sower / PA F5）全部可见，
+    //   唯独走 ULW 的三个（AutoFish / EyeFix / TimeFreeze）窗口都建成了却看不见。
+    //   → ULW 在本机游戏合成环境下不生效（不只是 alpha 通道的问题）。
+    //   LWA_ALPHA 整窗 alpha 已由 InitHud 设定；离屏渲染后只提交一次，
+    //   既可见也不闪（与 PA F5 HUD 完全同一条路）。
+    HDC target = GetDC(g_hudWindow);
+    if (target) {
+        BitBlt(target, 0, 0, w, h, g_afMemDC, 0, 0, SRCCOPY);
+        ReleaseDC(g_hudWindow, target);
+    }
+}
+
 static LRESULT CALLBACK HudWndProc(HWND window, UINT message,
                                     WPARAM wParam, LPARAM lParam) {
     switch (message) {
@@ -1211,89 +1381,17 @@ static LRESULT CALLBACK HudWndProc(HWND window, UINT message,
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT: {
+        // v1.6.x：仅 BeginPaint/EndPaint 校验绘制区；实际绘制走 AfRedraw →
+        //   UpdateLayeredWindow 一次性提交离屏 DIB（消除分层窗口 GDI 直绘闪烁）。
         PAINTSTRUCT paint = {};
-        HDC dc = BeginPaint(window, &paint);
-        RECT client = {};
-        GetClientRect(window, &client);
-
-        // 背景
-        HBRUSH bg = CreateSolidBrush(RGB(28, 30, 34));
-        FillRect(dc, &client, bg);
-        DeleteObject(bg);
-
-        // 左侧强调色条
-        COLORREF accent;
-        const int state = g_hudState;
-        if (state == 1) accent = RGB(64, 160, 224);    // 蓝色=自动钓鱼
-        else if (state == 2) accent = RGB(200, 170, 60); // 黄色=待机
-        else accent = RGB(120, 130, 140);              // 灰色=关闭
-        RECT bar = client;
-        bar.right = bar.left + 6;
-        HBRUSH accentBrush = CreateSolidBrush(accent);
-        FillRect(dc, &bar, accentBrush);
-        DeleteObject(accentBrush);
-
-        SetBkMode(dc, TRANSPARENT);
-
-        // 标题
-        SetTextColor(dc, RGB(150, 150, 155));
-        HFONT oldFont = (HFONT)SelectObject(dc, g_hudFontSmall);
-        RECT titleRect = client;
-        titleRect.left += 22;
-        titleRect.right -= 14;
-        titleRect.bottom = titleRect.top + 22;
-        DrawTextW(dc, L"\x81EA\x52A8\x9493\x9C7C", -1, &titleRect,  // 自动钓鱼
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-
-        // 状态文字
-        const wchar_t* stateText;
-        COLORREF stateColor;
-        if (state == 1) {
-            stateText = L"\x5F00\x542F";  // 开启
-            stateColor = RGB(100, 200, 240);
-        } else if (state == 2) {
-            stateText = L"\x5F85\x673A";  // 待机
-            stateColor = RGB(220, 190, 100);
-        } else {
-            stateText = L"\x5173\x95ED";  // 关闭
-            stateColor = RGB(200, 200, 210);
-        }
-        SelectObject(dc, g_hudFont);
-        SetTextColor(dc, stateColor);
-        RECT stateRect = client;
-        stateRect.left += 22;
-        stateRect.right -= 14;
-        stateRect.top += 22;
-        stateRect.bottom = stateRect.top + 32;  // 限定高度，避免 VCENTER 居中过低
-        DrawTextW(dc, stateText, -1, &stateRect,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-
-        // 垃圾排除状态行
-        const int ntState = g_hudNoTrashState;
-        if (ntState >= 0) {
-            const wchar_t* ntText;
-            COLORREF ntColor;
-            if (ntState == 1) {
-                ntText = L"\x5783\x573E\x6392\x9664: \x5F00\x542F";  // 垃圾排除: 开启
-                ntColor = RGB(120, 220, 120);  // 绿色
-            } else {
-                ntText = L"\x5783\x573E\x6392\x9664: \x5173\x95ED";  // 垃圾排除: 关闭
-                ntColor = RGB(160, 160, 170);
-            }
-            SetTextColor(dc, ntColor);
-            RECT ntRect = client;
-            ntRect.left += 22;
-            ntRect.right -= 14;
-            ntRect.top += 58;
-            ntRect.bottom = ntRect.top + 30;  // 限定高度
-            DrawTextW(dc, ntText, -1, &ntRect,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        }
-
-        SelectObject(dc, oldFont);
+        BeginPaint(window, &paint);
         EndPaint(window, &paint);
+        AfRedraw();
         return 0;
     }
+    case WM_DESTROY:
+        AfFreeBuffer();
+        return 0;
     default:
         return DefWindowProcW(window, message, wParam, lParam);
     }
@@ -1355,16 +1453,40 @@ static bool InitHud() {
 
 static void UpdateHudPosition() {
     if (!g_hudWindow) return;
-    MONITORINFO mi = {};
-    mi.cbSize = sizeof(mi);
-    HMONITOR mon = MonitorFromWindow(QolFindGameWindow(), MONITOR_DEFAULTTOPRIMARY);
-    if (!GetMonitorInfoW(mon, &mi)) {
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
-    }
+    // v1.6.13（2026-11-01）【定位修复·KB-113】原来用「屏幕工作区」左上角 +24 定位，
+    //   窗口化游玩时游戏窗口并不在 (0,0)（本机实测窗口 rect=[150,10,1444,768]），
+    //   于是 HUD 被画到游戏窗口**外面的桌面**上 —— 日志明明写着 HUD ready / shown，
+    //   玩家却完全看不到。改为锚定游戏窗口客户区左上角，并钳制在客户区内。
     const int width = 180;
     const int height = 108;
-    const int x = mi.rcWork.left + 24;
-    const int y = mi.rcWork.top + 24;
+    int x = 24;
+    int y = 24;
+    bool anchored = false;
+    {
+        HWND gameWnd = QolFindGameWindow();
+        RECT gr = {};
+        POINT gpt = { 0, 0 };
+        if (gameWnd && GetClientRect(gameWnd, &gr) &&
+            ClientToScreen(gameWnd, &gpt)) {
+            const int cw = gr.right - gr.left;
+            const int ch = gr.bottom - gr.top;
+            if (cw > 0 && ch > 0) {
+                x = gpt.x + 24;
+                y = gpt.y + 24;
+                if (x + width + 24 > gpt.x + cw) x = gpt.x + cw - width - 24;
+                if (y + height + 24 > gpt.y + ch) y = gpt.y + ch - height - 24;
+                if (x < gpt.x + 8) x = gpt.x + 8;
+                if (y < gpt.y + 8) y = gpt.y + 8;
+                anchored = true;
+            }
+        }
+    }
+    if (!anchored) {
+        RECT wa = {};
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+        x = wa.left + 24;
+        y = wa.top + 24;
+    }
     SetWindowPos(g_hudWindow, HWND_TOPMOST, x, y, width, height,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
@@ -1568,25 +1690,33 @@ static void RestoreAllHooks() {
 }
 extern "C" __declspec(dllexport) void mod_init(void) {
     LogOpen("autofish");
-    Log("[AutoFish] mod_init 开始 (v1.5.5-diag v1.20)");
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_COMMON_EXIT, "RVA_FISHING_COMMON_EXIT", HOT_RVA, 0x219F46);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_COMMON_EXIT_CONTINUE, "RVA_FISHING_COMMON_EXIT_CONTINUE", HOT_RVA, 0x219F4D);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_UPDATE_EPILOGUE, "RVA_FISHING_UPDATE_EPILOGUE", HOT_RVA, 0x219FC1);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_SUCCESS_COMPLETION_GATE, "RVA_FISHING_SUCCESS_COMPLETION_GATE", HOT_RVA, 0x219DF7);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_SUCCESS_GATE_CONTINUE, "RVA_FISHING_SUCCESS_GATE_CONTINUE", HOT_RVA, 0x219DFE);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_CANCEL_REQUEST, "RVA_FISHING_CANCEL_REQUEST", HOT_RVA, 0x218963);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_CANCEL_REQUEST_CONTINUE, "RVA_FISHING_CANCEL_REQUEST_CONTINUE", HOT_RVA, 0x21896E);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_PHASE4_FINISH, "RVA_FISHING_PHASE4_FINISH", HOT_RVA, 0x219C75);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_PHASE4_CLEANUP, "RVA_FISHING_PHASE4_CLEANUP", HOT_RVA, 0x219C7E);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_PHASE4_NATIVE_CONTINUE, "RVA_FISHING_PHASE4_NATIVE_CONTINUE", HOT_RVA, 0x219C7D);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_NATIVE_ACTION_FINISH, "RVA_FISHING_NATIVE_ACTION_FINISH", HOT_RVA, 0x211DE0);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_VTABLE, "RVA_FISHING_VTABLE", HOT_RVA, 0xE387F8);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_GAME_ROOT_SLOT, "RVA_FISHING_GAME_ROOT_SLOT", HOT_RVA, 0x10FCBB0);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_SAVE_DATA_VTABLE, "RVA_FISHING_SAVE_DATA_VTABLE", HOT_RVA, 0xE2D838);
-    HotConfig_Register("autofish", (void*)&RVA_FISHING_MONITOR_TARGET, "RVA_FISHING_MONITOR_TARGET", HOT_RVA, 0x218430);
-    HotConfig_Register("autofish", (void*)&RVA_NO_TRASH_HOOK, "RVA_NO_TRASH_HOOK", HOT_RVA, 0x21B0C5);
-    HotConfig_Register("autofish", (void*)&RVA_NO_TRASH_CONTINUE, "RVA_NO_TRASH_CONTINUE", HOT_RVA, 0x21B0CA);
-    HotConfig_Register("autofish", (void*)&RVA_NO_TRASH_SKIP_TARGET, "RVA_NO_TRASH_SKIP_TARGET", HOT_RVA, 0x21B116);
+    qol::obs::Init(nullptr);  // v1.6.x: 统一观测层接入
+    qol::obs::SetInt("autofish", "ready", 1);
+    qol::obs::EventF(1, 2500, L"[AutoFish] 已加载：观测层接入");
+    // v-local：游戏版本闸门（village.exe 非 v1.20 build 25311578 则不启用）
+    if (!qol::ExeBuildSupported()) {
+        Log("[AutoFish] 游戏版本不匹配（非 v1.20 build 25311578）→ 本 MOD 不启用\n");
+        return;
+    }
+    Log("[AutoFish] mod_init 开始 (v1.6.8 v1.20)");
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_COMMON_EXIT, "RVA_FISHING_COMMON_EXIT", HOT_RVA, 0x21D036);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_COMMON_EXIT_CONTINUE, "RVA_FISHING_COMMON_EXIT_CONTINUE", HOT_RVA, 0x21D03D);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_UPDATE_EPILOGUE, "RVA_FISHING_UPDATE_EPILOGUE", HOT_RVA, 0x21D0B1);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_SUCCESS_COMPLETION_GATE, "RVA_FISHING_SUCCESS_COMPLETION_GATE", HOT_RVA, 0x21CEE7);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_SUCCESS_GATE_CONTINUE, "RVA_FISHING_SUCCESS_GATE_CONTINUE", HOT_RVA, 0x21CEEE);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_CANCEL_REQUEST, "RVA_FISHING_CANCEL_REQUEST", HOT_RVA, 0x21BA53);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_CANCEL_REQUEST_CONTINUE, "RVA_FISHING_CANCEL_REQUEST_CONTINUE", HOT_RVA, 0x21BA5E);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_PHASE4_FINISH, "RVA_FISHING_PHASE4_FINISH", HOT_RVA, 0x21CD65);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_PHASE4_CLEANUP, "RVA_FISHING_PHASE4_CLEANUP", HOT_RVA, 0x21CD6E);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_PHASE4_NATIVE_CONTINUE, "RVA_FISHING_PHASE4_NATIVE_CONTINUE", HOT_RVA, 0x21CD6D);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_NATIVE_ACTION_FINISH, "RVA_FISHING_NATIVE_ACTION_FINISH", HOT_RVA, 0x214F10);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_VTABLE, "RVA_FISHING_VTABLE", HOT_RVA, 0xE53230);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_GAME_ROOT_SLOT, "RVA_FISHING_GAME_ROOT_SLOT", HOT_RVA, 0x111cc90);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_SAVE_DATA_VTABLE, "RVA_FISHING_SAVE_DATA_VTABLE", HOT_RVA, 0xE48230);
+    HotConfig_Register("autofish", (void*)&RVA_FISHING_MONITOR_TARGET, "RVA_FISHING_MONITOR_TARGET", HOT_RVA, 0x21B520);
+    HotConfig_Register("autofish", (void*)&RVA_NO_TRASH_HOOK, "RVA_NO_TRASH_HOOK", HOT_RVA, 0x21E1B5);
+    HotConfig_Register("autofish", (void*)&RVA_NO_TRASH_CONTINUE, "RVA_NO_TRASH_CONTINUE", HOT_RVA, 0x21E1BA);
+    HotConfig_Register("autofish", (void*)&RVA_NO_TRASH_SKIP_TARGET, "RVA_NO_TRASH_SKIP_TARGET", HOT_RVA, 0x21E206);
     HotConfig_Register("autofish", (void*)&FISHING_CURRENT_PHASE_OFFSET, "FISHING_CURRENT_PHASE_OFFSET", HOT_RVA, 0x1D8);
     HotConfig_Register("autofish", (void*)&FISHING_REQUESTED_PHASE_OFFSET, "FISHING_REQUESTED_PHASE_OFFSET", HOT_RVA, 0x1DC);
     HotConfig_Register("autofish", (void*)&FISHING_VALID_SPOT_OFFSET, "FISHING_VALID_SPOT_OFFSET", HOT_RVA, 0x270);
@@ -1595,10 +1725,10 @@ extern "C" __declspec(dllexport) void mod_init(void) {
     HotConfig_Register("autofish", (void*)&FISHING_WAIT_TICKS_OFFSET, "FISHING_WAIT_TICKS_OFFSET", HOT_RVA, 0x2F8);
     HotConfig_Register("autofish", (void*)&SAVE_DATA_OFFSET, "SAVE_DATA_OFFSET", HOT_RVA, 0x208);
     HotConfig_Register("autofish", (void*)&SAVE_RAW_SECOND_OFFSET, "SAVE_RAW_SECOND_OFFSET", HOT_RVA, 0x3270);
-    HotConfig_Register("autofish", (void*)&RVA_SUCCESS_EXIT_JUMP, "RVA_SUCCESS_EXIT_JUMP", HOT_RVA, 0x219E50);
-    HotConfig_Register("autofish", (void*)&RVA_DIRECT_NULL_EXIT, "RVA_DIRECT_NULL_EXIT", HOT_RVA, 0x219E01);
-    HotConfig_Register("autofish", (void*)&RVA_STATE_DISPATCH, "RVA_STATE_DISPATCH", HOT_RVA, 0x218480);
-    HotConfig_Register("autofish", (void*)&RVA_SUCCESS_PHASE, "RVA_SUCCESS_PHASE", HOT_RVA, 0x219154);
+    HotConfig_Register("autofish", (void*)&RVA_SUCCESS_EXIT_JUMP, "RVA_SUCCESS_EXIT_JUMP", HOT_RVA, 0x21CF40);
+    HotConfig_Register("autofish", (void*)&RVA_DIRECT_NULL_EXIT, "RVA_DIRECT_NULL_EXIT", HOT_RVA, 0x21CEF1);
+    HotConfig_Register("autofish", (void*)&RVA_STATE_DISPATCH, "RVA_STATE_DISPATCH", HOT_RVA, 0x21B570);
+    HotConfig_Register("autofish", (void*)&RVA_SUCCESS_PHASE, "RVA_SUCCESS_PHASE", HOT_RVA, 0x21C244);
     HotConfig_Poll();
     HotConfig_DumpCE("autofish");
     // v1.5.0: 热键 9/F10 移除，开关改由 QoL 快捷菜单（F1）驱动
@@ -1641,7 +1771,38 @@ extern "C" __declspec(dllexport) void mod_tick(void) {
 
     if (!G::ready) return;
     HotConfig_Poll();
-    if (!QolGameBusy()) PollAutoDetect();  // P1-2: 载入/菜单期间静默
+
+    // v1.6.9【自诊断 25640656】gate 状态一次性上报（每 5s，最多 6 次，防刷屏）。
+    //   目的：一次进游戏即可判定 PollAutoDetect 是否被 QolGameBusy 挡住，以及
+    //   monitor 时间戳是否新鲜——避免只看到 fishing=0 却不知为何（本次实测教训）。
+    {
+        static ULONGLONG s_nextGateDiag = 0;
+        static int s_gateDiagCount = 0;
+        const ULONGLONG nowMs = GetTickCount64();
+        if (s_gateDiagCount < 6 && nowMs >= s_nextGateDiag) {
+            s_nextGateDiag = nowMs + 5000;
+            ++s_gateDiagCount;
+            const ULONGLONG lastMon =
+                g_lastMonitorTick.load(std::memory_order_relaxed);
+            Log("[AutoFish][diag] busy=%d loading=%d menu=%d monReady=%d "
+                "initFailed=%d lastMonAge=%lld fishing=%d auto=%d\n",
+                QolGameBusy() ? 1 : 0, QolLoading() ? 1 : 0,
+                QolInMenu() ? 1 : 0, g_fishingMonitorReady ? 1 : 0,
+                g_fishingInitFailed ? 1 : 0,
+                lastMon ? static_cast<long long>(nowMs - lastMon) : -1LL,
+                g_fishingEnabled.load(std::memory_order_relaxed) ? 1 : 0,
+                g_autoDetectMode.load(std::memory_order_relaxed) ? 1 : 0);
+        }
+    }
+
+    // v1.6.9【修复 25640656】原用 QolGameBusy()，但其中 QolInMenu() 的
+    //   "时钟停走 > 1s" 启发式在新 build 误报 true（实测 diag: busy=1
+    //   loading=0 menu=1），导致 PollAutoDetect 永不被调用 → fishing 永不开
+    //   → 两个 rearm 函数全部静默 return。改为只用可靠的 QolLoading()
+    //   （save 链 + game root，实测 loading=0 正确）排除载入/场景切换；
+    //   菜单暂停时 monitor 本身不动，PollAutoDetect 的 sinceMonitor 条件
+    //   自然不满足，不会误开补丁。
+    if (!QolLoading()) PollAutoDetect();
     PumpHud();
     QolHudGuardVisibility(g_hudWindow);  // v1.5.6: 失焦隐藏 HUD（不飘桌面）
 }
@@ -1649,6 +1810,10 @@ extern "C" __declspec(dllexport) void mod_tick(void) {
 extern "C" __declspec(dllexport) void unload(void) {
     Log("[AutoFish] unload begin");
     RestoreAllHooks();
+    // v1.5.13: 卸载清理——销毁 HUD 窗口 + 释放字体，避免 WndProc/句柄悬空引用已卸载 DLL
+    if (g_hudWindow)    { DestroyWindow(g_hudWindow);    g_hudWindow = nullptr; }
+    if (g_hudFont)      { DeleteObject(g_hudFont);       g_hudFont = nullptr; }
+    if (g_hudFontSmall) { DeleteObject(g_hudFontSmall);  g_hudFontSmall = nullptr; }
     Log("[AutoFish] unload complete");
     LogClose();
 }
@@ -1659,6 +1824,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
         g_autofishModule = hModule;
         DisableThreadLibraryCalls(hModule);
     }
+    else if (reason == DLL_PROCESS_DETACH) {
+        qol::obs::Shutdown();  // v1.6.x: 解观测层映射（仅本 DLL 视图）
+    }
     return TRUE;
 }
-

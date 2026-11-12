@@ -110,3 +110,54 @@ inline void QolHudGuardVisibility(HWND hud) {
     }
 }
 
+// ============================================================
+// KB-113 客户区锚定（2026-11-01 定案；2026-11-06 全 MOD 统一收口）
+// 问题：用 SPI_GETWORKAREA / MonitorFromWindow 或硬编码屏幕坐标定位浮层时，
+//   窗口化游玩（游戏窗口不在 (0,0)）会把 HUD 画到游戏窗口**外面的桌面上** ——
+//   IsWindowVisible=true、alpha=228、日志写着 shown，玩家却完全看不到。
+//   4K/250% DPI 下偏移更大：2026-11-06 实测游戏客户区 [79,579,1999,1659]，
+//   而 AutoHarvest HUD 在 [24,94,224,154]、DebugHUD 在 [10,10,390,434]，
+//   与客户区重叠率均为 0。PA F5 HUD / ModManager F9 面板因锚游戏窗口而正常。
+// 用法：显示浮层前调用，把 x/y 交给 CreateWindowEx / SetWindowPos。
+//   center=false → 客户区左上角 + (offX,offY)；center=true → 客户区正中。
+//   返回 false = 没找到游戏窗口，已退回屏幕工作区（仅兜底）。
+// 纵向槽位约定：AutoFish 24 / EyeFix 140 / Sower 210 / AutoHarvest 280。
+// ============================================================
+inline bool QolGetClientBox(int* x, int* y, int* w, int* h) {
+    HWND game = QolFindGameWindow();
+    RECT gr = {};
+    POINT pt = { 0, 0 };
+    if (!game || !GetClientRect(game, &gr) || !ClientToScreen(game, &pt))
+        return false;
+    const int cw = gr.right - gr.left;
+    const int ch = gr.bottom - gr.top;
+    if (cw <= 0 || ch <= 0) return false;
+    if (x) *x = pt.x;
+    if (y) *y = pt.y;
+    if (w) *w = cw;
+    if (h) *h = ch;
+    return true;
+}
+
+inline bool QolAnchorToClient(int offX, int offY, int w, int h,
+                              int* outX, int* outY, bool center = false) {
+    int cx = 0, cy = 0, cw = 0, ch = 0;
+    if (QolGetClientBox(&cx, &cy, &cw, &ch)) {
+        int x = center ? cx + (cw - w) / 2 : cx + offX;
+        int y = center ? cy + (ch - h) / 2 : cy + offY;
+        if (w > 0 && x + w > cx + cw - 8) x = cx + cw - w - 8;
+        if (h > 0 && y + h > cy + ch - 8) y = cy + ch - h - 8;
+        if (x < cx + 8) x = cx + 8;
+        if (y < cy + 8) y = cy + 8;
+        *outX = x;
+        *outY = y;
+        return true;
+    }
+    RECT wa = {};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) {
+        wa.left = 0; wa.top = 0; wa.right = 1920; wa.bottom = 1080;
+    }
+    *outX = center ? wa.left + (wa.right - wa.left - w) / 2 : wa.left + offX;
+    *outY = center ? wa.top + (wa.bottom - wa.top - h) / 2 : wa.top + offY;
+    return false;
+}

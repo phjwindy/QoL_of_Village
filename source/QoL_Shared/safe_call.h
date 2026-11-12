@@ -176,7 +176,6 @@ static uint32_t SafeCallOutPtr1Impl(void* (__fastcall *fn)(void*), void* a1, voi
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0xFFFFFFFF; }
 }
 
-
 #ifdef __cplusplus
 namespace qol {
 
