@@ -3,6 +3,7 @@
 作者：PHJ&消失的清风  
 适配：Steam build 25640656（v1.30）  
 GitHub：https://github.com/phjwindy/QoL_of_Village  
+小黑盒发布页：https://www.xiaoheihe.cn/app/bbs/link/195388113  
 转载或分享时请注明出处。
 
 > ⚠️ 本合集仅适配游戏 v1.30（build 25640656），其他版本请勿使用，可能导致功能异常或存档损坏。
